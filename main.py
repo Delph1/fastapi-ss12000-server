@@ -6,8 +6,8 @@ import uuid # For generating mock IDs
 
 # Initialize the FastAPI application
 app = FastAPI(
-    title="SS12000 Mock API Server",
-    description="A basic mock server for the SS12000 API, serving static and slightly dynamic JSON responses.",
+    title="SS12000 API Server",
+    description="A basic test server for the SS12000 API, serving static and slightly dynamic JSON responses.",
     version="0.2.0" # Updated version
 )
 
