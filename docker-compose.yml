@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  ss12000-server:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./main.py:/app/main.py  # Mount the main.py for live reloading during development
+      - ./requirements.txt:/app/requirements.txt # Mount requirements for consistency
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # For production, remove --reload and volumes for a smaller image and better performance.
