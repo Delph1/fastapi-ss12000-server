@@ -1,12 +1,43 @@
 version: '3.8'
 
 services:
-  ss12000-server:
+  db:
+    # Use the official MySQL 8.0 image
+    image: mysql:8.0
+    # Set environment variables for the database
+    environment:
+      MYSQL_ROOT_PASSWORD: my_root_password
+      MYSQL_DATABASE: ss12000_db
+    # Persist the database data in a named volume
+    volumes:
+      # This is the key part: it mounts our database setup script
+      # and MySQL will automatically run it on first startup.
+      - ./database.sql:/docker-entrypoint-initdb.d/database.sql
+      # Persist the data even if the container is removed
+      - db_data:/var/lib/mysql
+    # Define a healthcheck to ensure the database is ready
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    # Build the image from the local Dockerfile
     build: .
+    # Map port 8000 on the host to port 8000 in the container
     ports:
       - "8000:8000"
-    volumes:
-      - ./main.py:/app/main.py  # Mount the main.py for live reloading during development
-      - ./requirements.txt:/app/requirements.txt # Mount requirements for consistency
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    # For production, remove --reload and volumes for a smaller image and better performance.
+    # This ensures the app container doesn't start until the 'db' container
+    # is reported as healthy by its healthcheck.
+    depends_on:
+      db:
+        condition: service_healthy
+    # Pass the database connection string as an environment variable
+    environment:
+      DATABASE_URL: "mysql+mysqlconnector://root:my_root_password@db:3306/ss12000_db"
+
+
+# Define the named volume for persistent database storage
+volumes:
+  db_data:
