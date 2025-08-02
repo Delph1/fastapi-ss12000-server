@@ -1,10 +1,9 @@
 # database.py
 import os
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import create_engine, Column, String, DateTime, ForeignKey, Float, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from sqlalchemy import desc, asc
 
 # --- Databas configuration ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -18,57 +17,114 @@ Base = declarative_base()
 # --- SQLAlchemy models ---
 
 class Organisation(Base):
-    """Mappar mot tabellen 'organisations'."""
     __tablename__ = "organisations"
     id = Column(String(36), primary_key=True)
     name = Column(String(255), nullable=False)
+    parent_id = Column(String(36), ForeignKey('organisations.id'))
+    school_unit_code = Column(String(255))
+    organisation_code = Column(String(255))
+    municipality_code = Column(String(255))
+    type = Column(String(50))
+    school_types = Column(String(255)) # Lagras som en komma-separerad sträng
+    start_date = Column(date)
+    end_date = Column(date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
-
-    placements = relationship("Placement", back_populates="organisation")
+    
+    # Define the relationship to itself for parent-child relationships
+    parent = relationship("Organisation", remote_side=[id], back_populates="children")
+    children = relationship("Organisation", back_populates="parent")
 
 class Person(Base):
-    """Mappar mot tabellen 'persons'."""
     __tablename__ = "persons"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=False)
+    given_name = Column(String(255))
+    family_name = Column(String(255))
     email = Column(String(255))
+    civic_no = Column(String(255), unique=True)
+    edu_person_principal_name = Column(String(255))
+    external_identifier_value = Column(String(255))
+    external_identifier_context = Column(String(255))
     securityMarking = Column(String(50), nullable=False)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
-    placements = relationship("Placement", back_populates="person")
-    attendance = relationship("Attendance", back_populates="person")
-    grades = relationship("Grade", back_populates="person")
-    aggregated_attendance = relationship("AggregatedAttendance", back_populates="person")
-
+    placements_child = relationship("Placement", foreign_keys="Placement.child_id", back_populates="child")
+    placements_owner = relationship("Placement", foreign_keys="Placement.owner_id", back_populates="owner")
+    duties = relationship("Duty", back_populates="person")
+    group_memberships = relationship("GroupMembership", back_populates="person")
+    responsible_for_children = relationship("ResponsibleFor", foreign_keys="ResponsibleFor.responsible_id", back_populates="responsible")
+    responsible_for_enrolments = relationship("ResponsibleFor", foreign_keys="ResponsibleFor.responsible_id", back_populates="responsible") # Placeholder for now
+    responsible_for_placements = relationship("ResponsibleFor", foreign_keys="ResponsibleFor.responsible_id", back_populates="responsible") # Placeholder for now
+    
 class Placement(Base):
-    """Mappar mot tabellen 'placements'."""
+    """Mappar mot tabellen 'placements'. Representerar en placering för en person."""
     __tablename__ = "placements"
     id = Column(String(36), primary_key=True)
-    organisation_id = Column(String(36), ForeignKey("organisations.id"))
-    person_id = Column(String(36), ForeignKey("persons.id"))
+    organisation_id = Column(String(36), ForeignKey('organisations.id'))
+    group_id = Column(String(36), ForeignKey('groups.id'))
+    person_id = Column(String(36), ForeignKey('persons.id'))  # Representerar 'child' i specen
+    owner_id = Column(String(36), ForeignKey('persons.id'))
+    start_date = Column(Date)
+    end_date = Column(Date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
-
-    organisation = relationship("Organisation", back_populates="placements")
-    person = relationship("Person", back_populates="placements")
+    
+    placed_at = relationship("Organisation")
+    group = relationship("Group")
+    child = relationship("Person", foreign_keys=[person_id], primaryjoin="Placement.person_id == Person.id")
+    owner = relationship("Person", foreign_keys=[owner_id], primaryjoin="Placement.owner_id == Person.id")
 
 class Duty(Base):
-    """Mappar mot tabellen 'duties'."""
     __tablename__ = "duties"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    person_id = Column(String(36), ForeignKey('persons.id'))
+    organisation_id = Column(String(36), ForeignKey('organisations.id'))
+    duty_role = Column(String(255), nullable=False)
+    start_date = Column(date)
+    end_date = Column(date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    person = relationship("Person", foreign_keys=[person_id])
+    organisation = relationship("Organisation", foreign_keys=[organisation_id])
 
 class Group(Base):
-    """Mappar mot tabellen 'groups'."""
     __tablename__ = "groups"
     id = Column(String(36), primary_key=True)
     name = Column(String(255), nullable=False)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
+    
+    group_memberships = relationship("GroupMembership", back_populates="group")
+
+class GroupMembership(Base):
+    __tablename__ = "group_memberships"
+    id = Column(String(36), primary_key=True)
+    person_id = Column(String(36), ForeignKey('persons.id'))
+    group_id = Column(String(36), ForeignKey('groups.id'))
+    start_date = Column(date)
+    end_date = Column(date)
+    created = Column(DateTime, default=datetime.utcnow)
+    modified = Column(DateTime, default=datetime.utcnow)
+
+    person = relationship("Person", back_populates="group_memberships")
+    group = relationship("Group", back_populates="group_memberships")
+
+class ResponsibleFor(Base):
+    __tablename__ = "responsible_for"
+    id = Column(String(36), primary_key=True)
+    responsible_id = Column(String(36), ForeignKey('persons.id'))
+    child_id = Column(String(36), ForeignKey('persons.id'))
+    start_date = Column(date)
+    end_date = Column(date)
+    created = Column(DateTime, default=datetime.utcnow)
+    modified = Column(DateTime, default=datetime.utcnow)
+    
+    responsible = relationship("Person", foreign_keys=[responsible_id])
+    child = relationship("Person", foreign_keys=[child_id])
 
 class Programme(Base):
     """Mappar mot tabellen 'programmes'."""
@@ -224,11 +280,26 @@ class Log(Base):
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
+class Enrolment(Base):
+    __tablename__ = "enrolments"
+    id = Column(String(36), primary_key=True)
+    person_id = Column(String(36), ForeignKey('persons.id'))
+    enroled_at_id = Column(String(36), ForeignKey('organisations.id'))
+    start_date = Column(Date)
+    end_date = Column(Date)
+    created = Column(DateTime, default=datetime.utcnow)
+    modified = Column(DateTime, default=datetime.utcnow)
+    
+    person = relationship("Person")
+    enroled_at = relationship("Organisation")
+
+Base.metadata.create_all(engine)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

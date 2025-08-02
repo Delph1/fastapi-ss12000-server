@@ -31,9 +31,19 @@ DROP TABLE IF EXISTS rooms;
 CREATE TABLE organisations (
     id VARCHAR(36) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
+    parent_id VARCHAR(36),
+    school_unit_code VARCHAR(255),
+    organisation_code VARCHAR(255),
+    municipality_code VARCHAR(255),
+    type VARCHAR(255),
+    school_types VARCHAR(255),
+    start_date DATE,
+    end_date DATE,
     created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_id) REFERENCES organisations(id)
 );
+
 
 -- Persons table
 CREATE TABLE persons (
@@ -222,11 +232,12 @@ CREATE TABLE log (
 --
 
 -- Insert data into organisations
-INSERT INTO organisations (id, name) VALUES
-('org-1', 'Stadsbiblioteket'),
-('org-2', 'Kulturskolan'),
-('org-3', 'IT-gymnasiet'),
-('org-4', 'Rådhusskolan');
+INSERT INTO organisations (id, name, parent_id, school_unit_code, organisation_code, municipality_code, type, school_types, start_date, end_date) VALUES
+('org-1', 'Stora Komvux', NULL, '123456', 'SK-01', '1480', 'Kommun', 'Grundskola,Gymnasium', '2020-01-01', NULL),
+('org-2', 'Stora Komvux Administration', 'org-1', NULL, 'SK-01-ADM', '1480', 'Avdelning', NULL, '2020-01-01', NULL),
+('org-3', 'Lilla Gymnasiet', 'org-1', '654321', 'LG-01', '1480', 'Skola', 'Gymnasium', '2021-08-15', NULL),
+('org-4', 'Stora Komvux - SFI', 'org-1', '555666', 'SK-01-SFI', '1480', 'Skola', 'Grundskola', '2022-01-01', '2025-12-31');
+
 
 -- Insert data into persons
 INSERT INTO persons (id, name, email, securityMarking) VALUES

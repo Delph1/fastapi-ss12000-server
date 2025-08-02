@@ -5,24 +5,10 @@ from typing import List, Optional, Union
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import desc, asc
+from sqlalchemy import desc, asc, func, or_
 
-from database import (
-    get_db, Organisation, Person, Placement, Duty, Group, Programme, StudyPlan, Syllabus,
-    SchoolUnitOffering, Activity, CalendarEvent, Attendance, AttendanceEvent,
-    AttendanceSchedule, Grade, AggregatedAttendance, Resource, Room, Subscription,
-    DeletedEntity, Log
-)
-
-from schemas import (
-    OrganisationWithPlacements, OrganisationBase, PersonWithRelations, PersonBase,
-    PlacementWithRelations, PlacementBase, Duty, Group, Programme, StudyPlan, Syllabus,
-    SchoolUnitOffering, ActivityWithRelations, CalendarEventWithActivity,
-    AttendanceWithRelations, AttendanceEventBase, AttendanceSchedule, GradeWithPerson,
-    AggregatedAttendanceWithPerson, Resource, Room, SubscriptionBase,
-    SubscriptionCreate, SubscriptionUpdate, DeletedEntity, Log, LookupRequest
-)
-
+from database import *
+from schemas import *
 
 # --- FastAPI-applikation ---
 app = FastAPI(title="SS12000 Mock API med MySQL")
@@ -38,13 +24,27 @@ def apply_sorting(query, model, sortkey: Optional[str]):
         "ModifiedAsc": (model.modified, asc),
         "CreatedDesc": (model.created, desc),
         "CreatedAsc": (model.created, asc),
+        "DisplayNameAsc": (model.display_name, asc),
+        "DisplayNameDesc": (model.display_name, desc),
+        "GivenNameAsc": (model.given_name, asc),
+        "GivenNameDesc": (model.given_name, desc),
+        "FamilyNameAsc": (model.family_name, asc),
+        "FamilyNameDesc": (model.family_name, desc),
+        "CivicNoAsc": (model.civic_no, asc),
+        "CivicNoDesc": (model.civic_no, desc),
+        "StartdateAsc": (model.start_date, asc),
+        "StartdateDesc": (model.start_date, desc),
+        "EnddateAsc": (model.end_date, asc),
+        "EnddateDesc": (model.end_date, desc),
+        "NameAsc": (model.name, asc),
+        "NameDesc": (model.name, desc),
     }
 
-    column, sort_order = sort_mapping.get(sortkey, (None, None))
-    if column and sort_order:
-        return query.order_by(sort_order(column))
-    else:
-        return query
+    if sortkey not in sort_mapping:
+        raise HTTPException(status_code=400, detail=f"Invalid sortkey: {sortkey}")
+
+    sort_field, sort_order = sort_mapping[sortkey]
+    return query.order_by(sort_order(sort_field))
 
 # Hjälpfunktion för att applicera meta-filter
 def apply_meta_filters(query, model, metaCreatedBefore: Optional[datetime], metaCreatedAfter: Optional[datetime], metaModifiedBefore: Optional[datetime], metaModifiedAfter: Optional[datetime]):
@@ -59,142 +59,642 @@ def apply_meta_filters(query, model, metaCreatedBefore: Optional[datetime], meta
         query = query.filter(model.modified > metaModifiedAfter)
     return query
 
+# Expand helper functions
+def expand_organisations(organisations: List[Organisation], db: Session) -> List[OrganisationExpanded]:
+    """
+    Hjälpfunktion för att expandera organisationsobjekt med parent_name.
+    """
+    expanded_list = []
+    for org in organisations:
+        expanded_org = org.__dict__.copy()
+        if org.parent_id:
+            parent_org = db.query(Organisation).filter(Organisation.id == org.parent_id).first()
+            if parent_org:
+                expanded_org['parent_name'] = parent_org.name
+        
+        # Säkerställer att school_types hanteras korrekt innan konvertering till Pydantic
+        if expanded_org.get('school_types') and isinstance(expanded_org['school_types'], str):
+            expanded_org['school_types'] = [SchoolTypesEnum(t) for t in expanded_org['school_types'].split(',')]
+            
+        expanded_list.append(OrganisationExpanded(**expanded_org))
+    return expanded_list
 
-# --- API-slutpunkter ---
-@app.get("/organisations", response_model=List[OrganisationWithPlacements])
+def expand_persons_data(persons: List[Person], expand: List[PersonExpandEnum], expand_ref_names: bool, db: Session) -> List[PersonExpanded]:
+    """
+    Hjälpfunktion för att expandera personobjekt med relaterad data.
+    """
+    expanded_list = []
+    for person in persons:
+        person_data = person.__dict__.copy()
+        expanded_person = PersonExpanded(**person_data)
+
+        if expand and expand_ref_names:
+            # Hämta referensnamn för alla relevanta tabeller
+            organisations = {org.id: org.name for org in db.query(Organisation).all()}
+            persons_map = {p.id: p.display_name for p in db.query(Person).all()}
+            groups = {g.id: g.name for g in db.query(Group).all()}
+        
+        if expand and PersonExpandEnum.duties in expand:
+            duties = db.query(Duty).filter(Duty.person_id == person.id).all()
+            if expand_ref_names:
+                expanded_duties = []
+                for duty in duties:
+                    duty_schema = DutySchema.from_orm(duty)
+                    duty_schema.person_name = persons_map.get(duty.person_id)
+                    duty_schema.duty_at_name = organisations.get(duty.duty_at_id)
+                    expanded_duties.append(duty_schema)
+                expanded_person.duties = expanded_duties
+            else:
+                expanded_person.duties = [DutySchema.from_orm(d) for d in duties]
+
+        if expand and PersonExpandEnum.placements in expand:
+            placements = db.query(Placement).filter(Placement.child_id == person.id).all()
+            if expand_ref_names:
+                expanded_placements = []
+                for placement in placements:
+                    placement_schema = PlacementSchema.from_orm(placement)
+                    placement_schema.child_name = persons_map.get(placement.child_id)
+                    placement_schema.owner_name = persons_map.get(placement.owner_id)
+                    placement_schema.placed_at_name = organisations.get(placement.placed_at_id)
+                    expanded_placements.append(placement_schema)
+                expanded_person.placements = expanded_placements
+            else:
+                expanded_person.placements = [PlacementSchema.from_orm(p) for p in placements]
+
+        if expand and PersonExpandEnum.ownedPlacements in expand:
+            owned_placements = db.query(Placement).filter(Placement.owner_id == person.id).all()
+            if expand_ref_names:
+                expanded_owned_placements = []
+                for placement in owned_placements:
+                    placement_schema = PlacementSchema.from_orm(placement)
+                    placement_schema.child_name = persons_map.get(placement.child_id)
+                    placement_schema.owner_name = persons_map.get(placement.owner_id)
+                    placement_schema.placed_at_name = organisations.get(placement.placed_at_id)
+                    expanded_owned_placements.append(placement_schema)
+                expanded_person.owned_placements = expanded_owned_placements
+            else:
+                expanded_person.owned_placements = [PlacementSchema.from_orm(p) for p in owned_placements]
+                
+        if expand and PersonExpandEnum.groupMemberships in expand:
+            group_memberships = db.query(GroupMembership).filter(GroupMembership.person_id == person.id).all()
+            if expand_ref_names:
+                expanded_group_memberships = []
+                for gm in group_memberships:
+                    gm_schema = GroupMembershipSchema.from_orm(gm)
+                    gm_schema.person_name = persons_map.get(gm.person_id)
+                    gm_schema.group_name = groups.get(gm.group_id)
+                    expanded_group_memberships.append(gm_schema)
+                expanded_person.group_memberships = expanded_group_memberships
+            else:
+                expanded_person.group_memberships = [GroupMembershipSchema.from_orm(gm) for gm in group_memberships]
+
+        if expand and PersonExpandEnum.responsibleFor in expand:
+            responsible_for = db.query(ResponsibleFor).filter(ResponsibleFor.responsible_id == person.id).all()
+            if expand_ref_names:
+                expanded_responsible_for = []
+                for rf in responsible_for:
+                    rf_schema = ResponsibleForSchema.from_orm(rf)
+                    rf_schema.responsible_name = persons_map.get(rf.responsible_id)
+                    rf_schema.child_name = persons_map.get(rf.child_id)
+                    expanded_responsible_for.append(rf_schema)
+                expanded_person.responsible_for = expanded_responsible_for
+            else:
+                expanded_person.responsible_for = [ResponsibleForSchema.from_orm(rf) for rf in responsible_for]
+                
+        expanded_list.append(expanded_person)
+    return expanded_list
+
+def apply_expand_for_placements(query, expands: Optional[List[PlacementExpandEnum]]):
+    """
+    Hjälpfunktion för att dynamiskt lägga till 'joinedload' för placeringar.
+    """
+    if not expands:
+        return query
+
+    if PlacementExpandEnum.child in expands:
+        query = query.options(joinedload(Placement.child))
+    if PlacementExpandEnum.owners in expands:
+        query = query.options(joinedload(Placement.owners))
+    
+    return query
+
+def apply_expand_for_duties(query, expands: Optional[List[DutyExpandEnum]]):
+    """
+    Hjälpfunktion för att dynamiskt lägga till 'joinedload' för tjänstgöringar.
+    """
+    if not expands:
+        return query
+
+    if DutyExpandEnum.person in expands:
+        query = query.options(joinedload(Duty.person))
+    
+    return query
+
+# --- API Endpoints ---
+# --- Organisations endpoints below ---
+@app.get("/organisations", response_model=List[OrganisationBase], summary="Hämta en lista med organisationer.")
 def get_organisations(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
+    parent: Optional[List[str]] = Query(None, description="Begränsa urvalet till utpekade organisations-ID:n."),
+    schoolUnitCode: Optional[List[str]] = Query(None, alias="schoolUnitCode", description="Begränsa urvalet till de skolenheter som har den angivna Skolenhetskoden."),
+    organisationCode: Optional[List[str]] = Query(None, alias="organisationCode", description="Begränsa urvalet till de organisationselement som har den angivna koden."),
+    municipalityCode: Optional[str] = Query(None, alias="municipalityCode", description="Begränsa urvalet till de organisationselement som har angiven kommunkod."),
+    type: Optional[List[OrganisationTypeEnum]] = Query(None, description="Begränsa urvalet till utpekade typ."),
+    schoolTypes: Optional[List[SchoolTypesEnum]] = Query(None, alias="schoolTypes", description="Begränsa urvalet till de organisationselement som har den angivna skolformen."),
+    startDate_onOrBefore: Optional[date] = Query(None, alias="startDate.onOrBefore", description="Begränsa urvalet till organisationselement som har ett startDate värde innan eller på det angivna datumet."),
+    startDate_onOrAfter: Optional[date] = Query(None, alias="startDate.onOrAfter", description="Begränsa urvalet till organisationselement som har ett startDate värde på eller efter det angivna datumet."),
+    endDate_onOrBefore: Optional[date] = Query(None, alias="endDate.onOrBefore", description="Begränsa urvalet till organisationselement som har ett endDate värde innan eller på det angivna datumet."),
+    endDate_onOrAfter: Optional[date] = Query(None, alias="endDate.onOrAfter", description="Begränsa urvalet till organisationselement som har ett endDate värde på eller efter det angivna datumet."),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt."),
+    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "DisplayNameAsc".'),
     limit: int = 100,
     offset: int = 0,
+    pageToken: Optional[str] = Query(None, description="Ett opakt värde som servern givit som svar på en tidigare ställd fråga.")
 ):
-    query = db.query(Organisation).options(joinedload(Organisation.placements))
-    query = apply_meta_filters(query, Organisation, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
-    query = apply_sorting(query, Organisation, sortkey)
-    return query.offset(offset).limit(limit).all()
+    """
+    Hämta en lista med organisationer med stöd för filtrering, sortering och paginering.
+    """
+    # Hantera pageToken som inte kan kombineras med andra filter
+    if pageToken and (parent or schoolUnitCode or organisationCode or municipalityCode or type or schoolTypes or startDate_onOrBefore or startDate_onOrAfter or endDate_onOrBefore or endDate_onOrAfter or metaCreatedBefore or metaCreatedAfter or metaModifiedBefore or metaModifiedAfter or sortkey):
+        raise HTTPException(
+            status_code=400,
+            detail="Filter can not be combined with pageToken."
+        )
 
-@app.get("/organisations/{organisation_id}", response_model=OrganisationWithPlacements)
-def get_organisation(organisation_id: str, db: Session = Depends(get_db)):
-    """Hämta en specifik organisation, inklusive dess placeringar."""
-    organisation = db.query(Organisation).options(joinedload(Organisation.placements)).filter(Organisation.id == organisation_id).first()
+    # Bygg upp SQLAlchemy-frågan
+    query = db.query(Organisation)
+
+    # Applicera filter
+    if parent:
+        query = query.filter(Organisation.parent_id.in_(parent))
+    if schoolUnitCode:
+        query = query.filter(Organisation.school_unit_code.in_(schoolUnitCode))
+    if organisationCode:
+        query = query.filter(Organisation.organisation_code.in_(organisationCode))
+    if municipalityCode:
+        query = query.filter(Organisation.municipality_code == municipalityCode)
+    if type:
+        query = query.filter(Organisation.type.in_([t.value for t in type]))
+    if schoolTypes:
+        # Denna filtrering antar att school_types lagras som en komma-separerad sträng
+        for st in schoolTypes:
+            query = query.filter(Organisation.school_types.like(f"%{st.value}%"))
+            
+    if startDate_onOrBefore:
+        query = query.filter(Organisation.start_date <= startDate_onOrBefore)
+    if startDate_onOrAfter:
+        query = query.filter(Organisation.start_date >= startDate_onOrAfter)
+        
+    if endDate_onOrBefore:
+        query = query.filter(Organisation.end_date <= endDate_onOrBefore)
+    if endDate_onOrAfter:
+        # Inkludera poster med null endDate
+        query = query.filter(
+            (Organisation.end_date >= endDate_onOrAfter) | (Organisation.end_date.is_(None))
+        )
+
+    # Applicera meta-parametrar
+    query = apply_meta_filters(query, Organisation, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
+    
+    # Applicera sortering
+    query = apply_sorting(query, Organisation, sortkey)
+    
+    # Applicera paginering
+    organisations = query.offset(offset).limit(limit).all()
+
+    if expandReferenceNames:
+        return expand_organisations(organisations, db)
+    else:
+        # Konvertera Pydantic modellen med rätt hantering av `school_types`
+        return [OrganisationExpanded.from_orm(org) for org in organisations]
+
+@app.get("/organisations/{id}", response_model=OrganisationBase, summary="Hämta en organisation baserat på ID.")
+def get_organisation_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt.")
+):
+    """
+    Hämtar en enskild organisation baserat på dess ID.
+    Returnerar en 404-fel om organisationen inte hittas.
+    """
+    organisation = db.query(Organisation).filter(Organisation.id == id).first()
     if not organisation:
         raise HTTPException(status_code=404, detail="Organisation not found")
-    return organisation
+    
+    if expandReferenceNames:
+        # Om expandReferenceNames är true, expandera organisationen
+        return expand_organisations([organisation], db)[0]
+    else:
+        return OrganisationExpanded.from_orm(organisation)
 
-@app.post("/organisations/lookup", response_model=List[OrganisationWithPlacements])
-def lookup_organisations(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med organisationer baserat på en lista med ID:n."""
-    organisations = db.query(Organisation).options(joinedload(Organisation.placements)).filter(Organisation.id.in_(lookup_data.ids)).all()
-    return organisations
+@app.post("/organisations/lookup", response_model=List[OrganisationBase], summary="Hämta många organisationer baserat på en lista av ID:n.")
+def lookup_organisations(
+    request_body: LookupRequest,
+    db: Session = Depends(get_db),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt.")
+):
+    """
+    Hämtar en lista med organisationer baserat på en lista av ID:n som skickas i request body.
+    """
+    # Hämta en lista med organisationer vars ID finns i request_body.organisations
+    organisations = db.query(Organisation).filter(Organisation.id.in_(request_body.organisations)).all()
+    
+    if expandReferenceNames:
+        return expand_organisations(organisations, db)
+    else:
+        # Konvertera Pydantic modellen med rätt hantering av `school_types`
+        return [OrganisationExpanded.from_orm(org) for org in organisations]
 
-
-@app.get("/persons", response_model=List[PersonWithRelations])
+# --- Persons endpoints below ---
+@app.get("/persons", response_model=List[PersonExpanded], summary="Hämta en lista med personer.", tags=["Person"])
 def get_persons(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
+    nameContains: Optional[List[str]] = Query(None, description="Begränsa urvalet till de personer vars namn innehåller något av parameterns värden."),
+    civicNo: Optional[str] = Query(None, description="Begränsa urvalet till den person vars civicNo matchar parameterns värde."),
+    eduPersonPrincipalName: Optional[str] = Query(None, alias="eduPersonPrincipalName", description="Begränsa urvalet till den person vars eduPersonPrincipalNames matchar parameterns värde."),
+    identifier_value: Optional[str] = Query(None, alias="identifier.value", description="Begränsa urvalet till den person vilka har ett värde i `externalIdentifiers.value` som matchar parameterns värde."),
+    identifier_context: Optional[str] = Query(None, alias="identifier.context", description="Begränsa urvalet till den person vilka har ett värde i `externalIdentifiers.context` som matchar parameterns värde."),
+    relationship_entity_type: Optional[PersonRelationshipTypeEnum] = Query(None, alias="relationship.entity.type", description="Begränsa urvalet till de personer som har en denna typ av relation till andra entititeter."),
+    relationship_organisation: Optional[str] = Query(None, alias="relationship.organisation", description="Begränsa urvalet till de personer som har en relation till angivet organisationselement."),
+    relationship_start_date_onOrBefore: Optional[date] = Query(None, alias="relationship.startDate.onOrBefore", description="Begränsa urvalet av personer till de som har relationer med startDate innan eller på det angivna datumet."),
+    relationship_start_date_onOrAfter: Optional[date] = Query(None, alias="relationship.startDate.onOrAfter", description="Begränsa urvalet av personer till de som har relationer med startDate efter eller på det angivna datumet."),
+    relationship_end_date_onOrBefore: Optional[date] = Query(None, alias="relationship.endDate.onOrBefore", description="Begränsa urvalet av personer till de som har relationer med endDate innan eller på det angivna datumet."),
+    relationship_end_date_onOrAfter: Optional[date] = Query(None, alias="relationship.endDate.onOrAfter", description="Begränsa urvalet av personer till de som har relationer med endDate efter eller på det angivna datumet."),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expand: Optional[List[PersonExpandEnum]] = Query(None, description="Beskriver om expanderade data ska hämtas."),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt."),
+    sortkey: Optional[str] = Query(None, description='Anger hur resultatet ska sorteras.'),
+    limit: int = 100,
+    offset: int = 0,
+    pageToken: Optional[str] = Query(None, description="Ett opakt värde som servern givit som svar på en tidigare ställd fråga.")
+):
+    """
+    Hämtar en lista med personer med stöd för avancerad filtrering, sortering och paginering.
+    """
+    if pageToken and (nameContains or civicNo or eduPersonPrincipalName or identifier_value or identifier_context or relationship_entity_type or relationship_organisation or relationship_start_date_onOrBefore or relationship_start_date_onOrAfter or relationship_end_date_onOrBefore or relationship_end_date_onOrAfter or metaCreatedBefore or metaCreatedAfter or metaModifiedBefore or metaModifiedAfter or expand or sortkey):
+        raise HTTPException(
+            status_code=400,
+            detail="Filter can not be combined with pageToken."
+        )
+
+    query = db.query(Person)
+
+    # Filtrering på namn
+    if nameContains:
+        # Skapar en and-klausul för alla namnfragment
+        name_filters = [
+            or_(
+                func.lower(Person.display_name).contains(func.lower(name_part)),
+                func.lower(Person.given_name).contains(func.lower(name_part)),
+                func.lower(Person.family_name).contains(func.lower(name_part))
+            ) for name_part in nameContains
+        ]
+        query = query.filter(*name_filters)
+
+    # Exakt matchning
+    if civicNo:
+        query = query.filter(Person.civic_no == civicNo)
+    if eduPersonPrincipalName:
+        query = query.filter(Person.edu_person_principal_name == eduPersonPrincipalName)
+    
+    # Externa identifierare
+    if identifier_value:
+        query = query.filter(Person.external_identifier_value == identifier_value)
+    if identifier_context:
+        query = query.filter(Person.external_identifier_context == identifier_context)
+
+    # Filtrering baserat på relationer
+    if relationship_entity_type:
+        if relationship_entity_type == PersonRelationshipTypeEnum.enrolment:
+            query = query.join(Enrolment, Enrolment.person_id == Person.id)
+            if relationship_organisation:
+                query = query.filter(Enrolment.enroled_at_id == relationship_organisation)
+            if relationship_start_date_onOrBefore:
+                query = query.filter(Enrolment.start_date <= relationship_start_date_onOrBefore)
+            if relationship_start_date_onOrAfter:
+                query = query.filter(Enrolment.start_date >= relationship_start_date_onOrAfter)
+            if relationship_end_date_onOrBefore:
+                query = query.filter(Enrolment.end_date <= relationship_end_date_onOrBefore)
+            if relationship_end_date_onOrAfter:
+                query = query.filter(Enrolment.end_date >= relationship_end_date_onOrAfter)
+                
+        elif relationship_entity_type == PersonRelationshipTypeEnum.duty:
+            query = query.join(Duty, Duty.person_id == Person.id)
+            if relationship_organisation:
+                query = query.filter(Duty.duty_at_id == relationship_organisation)
+            if relationship_start_date_onOrBefore:
+                query = query.filter(Duty.start_date <= relationship_start_date_onOrBefore)
+            if relationship_start_date_onOrAfter:
+                query = query.filter(Duty.start_date >= relationship_start_date_onOrAfter)
+            if relationship_end_date_onOrBefore:
+                query = query.filter(Duty.end_date <= relationship_end_date_onOrBefore)
+            if relationship_end_date_onOrAfter:
+                query = query.filter(Duty.end_date >= relationship_end_date_onOrAfter)
+
+        elif relationship_entity_type == PersonRelationshipTypeEnum.placement_child:
+            query = query.join(Placement, Placement.child_id == Person.id)
+            if relationship_organisation:
+                query = query.filter(Placement.placed_at_id == relationship_organisation)
+            if relationship_start_date_onOrBefore:
+                query = query.filter(Placement.start_date <= relationship_start_date_onOrBefore)
+            if relationship_start_date_onOrAfter:
+                query = query.filter(Placement.start_date >= relationship_start_date_onOrAfter)
+            if relationship_end_date_onOrBefore:
+                query = query.filter(Placement.end_date <= relationship_end_date_onOrBefore)
+            if relationship_end_date_onOrAfter:
+                query = query.filter(Placement.end_date >= relationship_end_date_onOrAfter)
+                
+        elif relationship_entity_type == PersonRelationshipTypeEnum.placement_owner:
+            query = query.join(Placement, Placement.owner_id == Person.id)
+            if relationship_organisation:
+                query = query.filter(Placement.placed_at_id == relationship_organisation)
+            if relationship_start_date_onOrBefore:
+                query = query.filter(Placement.start_date <= relationship_start_date_onOrBefore)
+            if relationship_start_date_onOrAfter:
+                query = query.filter(Placement.start_date >= relationship_start_date_onOrAfter)
+            if relationship_end_date_onOrBefore:
+                query = query.filter(Placement.end_date <= relationship_end_date_onOrBefore)
+            if relationship_end_date_onOrAfter:
+                query = query.filter(Placement.end_date >= relationship_end_date_onOrAfter)
+                
+        elif relationship_entity_type == PersonRelationshipTypeEnum.groupMembership:
+            query = query.join(GroupMembership, GroupMembership.person_id == Person.id)
+            if relationship_start_date_onOrBefore:
+                query = query.filter(GroupMembership.start_date <= relationship_start_date_onOrBefore)
+            if relationship_start_date_onOrAfter:
+                query = query.filter(GroupMembership.start_date >= relationship_start_date_onOrAfter)
+            if relationship_end_date_onOrBefore:
+                query = query.filter(GroupMembership.end_date <= relationship_end_date_onOrBefore)
+            if relationship_end_date_onOrAfter:
+                query = query.filter(GroupMembership.end_date >= relationship_end_date_onOrAfter)
+                
+        elif relationship_entity_type in [PersonRelationshipTypeEnum.responsibleFor_enrolment, PersonRelationshipTypeEnum.responsibleFor_placement]:
+            # För enkelhetens skull i mocken, behandlas de här relationerna på samma sätt
+            query = query.join(ResponsibleFor, ResponsibleFor.responsible_id == Person.id)
+            if relationship_start_date_onOrBefore:
+                query = query.filter(ResponsibleFor.start_date <= relationship_start_date_onOrBefore)
+            if relationship_start_date_onOrAfter:
+                query = query.filter(ResponsibleFor.start_date >= relationship_start_date_onOrAfter)
+            if relationship_end_date_onOrBefore:
+                query = query.filter(ResponsibleFor.end_date <= relationship_end_date_onOrBefore)
+            if relationship_end_date_onOrAfter:
+                query = query.filter(ResponsibleFor.end_date >= relationship_end_date_onOrAfter)
+
+    # Applicera meta-parametrar
+    query = apply_meta_filters(query, Person, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
+
+    # Applicera sortering
+    if sortkey:
+        query = apply_sorting(query, Person, sortkey)
+    else:
+        query = query.order_by(Person.display_name.asc()) # Standard sortering
+
+    # Applicera paginering
+    persons = query.offset(offset).limit(limit).all()
+    
+    # Expanderade data
+    if expand or expandReferenceNames:
+        return expand_persons_data(persons, expand, expandReferenceNames, db)
+    else:
+        return [PersonBase.from_orm(p) for p in persons]
+
+@app.post("/persons/lookup", response_model=List[PersonExpanded])
+def persons_lookup(
+    request_body: LookupRequest,
+    db: Session = Depends(get_db),
+    expand: Optional[List[str]] = Query(None, description="Expands related data for the person, e.g., 'duties', 'placements'."),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returns expanded reference names in the response.")
+):
+    """
+    Fetches multiple persons based on a list of IDs or social security numbers.
+    """
+    if not request_body.identifiers:
+        return []
+
+    # Get persons from the database
+    persons = db.query(Person).filter(
+        Person.id.in_(request_body.identifiers) | Person.civic_no.in_(request_body.identifiers) 
+    ).all()
+
+    if expand or expandReferenceNames:
+        return expand_persons_data(persons, expand, expandReferenceNames, db)
+    else:
+        return [PersonBase.from_orm(p) for p in persons]
+
+@app.get("/persons/{id}", response_model=PersonExpanded)
+def get_person_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expand: Optional[List[str]] = Query(None, description="Expands related data for the person, e.g., 'duties', 'placements'."),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returns expanded reference names in the response.")
+):
+    """
+    Get person by person id.
+    """
+    try:
+        # Check if the ID is a valid UUID, otherwise it's a Bad Request (400)
+        uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format. Must be a valid UUID.")
+    
+    person = db.query(Person).filter(Person.id == id).first()
+    
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found.")
+    
+    expanded_data = {}
+    if expand:
+        expanded_data = expand_persons_data(List(person), expand, expandReferenceNames, db)
+    
+    person_dict = person.__dict__
+    person_dict.update(expanded_data)
+    
+    return PersonExpanded(**person_dict)
+
+# --- Placements endpoints below ---
+@app.get("/placements", response_model=List[PlacementExpanded], summary="Hämta en lista med placeringar.")
+def get_placements(
+    db: Session = Depends(get_db),
+    child_id: Optional[List[str]] = Query(None, alias="child"),
+    owner_id: Optional[List[str]] = Query(None, alias="owner"),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expand: Optional[List[PlacementExpandEnum]] = Query(None, alias="expand", description="Lista med expanderbara fält, t.ex. 'child', 'owners'"),
+    sortkey: Optional[str] = Query(None, description='Sorteringsordning, t.ex. "ModifiedDesc" eller "CreatedAsc".'),
     limit: int = 100,
     offset: int = 0,
 ):
-    query = db.query(Person).options(
-        joinedload(Person.placements),
-        joinedload(Person.attendance),
-        joinedload(Person.grades),
-        joinedload(Person.aggregated_attendance)
-    )
-    query = apply_meta_filters(query, Person, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
-    query = apply_sorting(query, Person, sortkey)
-    return query.offset(offset).limit(limit).all()
-
-
-@app.get("/persons/{person_id}", response_model=PersonWithRelations)
-def get_person(person_id: str, db: Session = Depends(get_db)):
     """
-    Hämta en specifik person, inklusive alla dess relaterade objekt
-    (placeringar, närvaror, betyg och aggregerad närvaro).
+    Hämta en lista med placeringar baserat på filter och sorteringsparametrar.
     """
-    person = db.query(Person).options(
-        joinedload(Person.placements),
-        joinedload(Person.attendance).joinedload(Attendance.activity),
-        joinedload(Person.attendance).joinedload(Attendance.attendance_event),
-        joinedload(Person.grades),
-        joinedload(Person.aggregated_attendance)
-    ).filter(Person.id == person_id).first()
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-    return person
+    query = db.query(Placement)
+    
+    # Apply filters
+    if child_id:
+        query = query.filter(Placement.child_id.in_(child_id))
+    if owner_id:
+        query = query.join(Placement.owners).filter(Person.id.in_(owner_id))
 
-@app.post("/persons/lookup", response_model=List[PersonWithRelations])
-def lookup_persons(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med personer baserat på en lista med ID:n."""
-    persons = db.query(Person).options(
-        joinedload(Person.placements),
-        joinedload(Person.attendance).joinedload(Attendance.activity),
-        joinedload(Person.attendance).joinedload(Attendance.attendance_event),
-        joinedload(Person.grades),
-        joinedload(Person.aggregated_attendance)
-    ).filter(Person.id.in_(lookup_data.ids)).all()
-    return persons
-
-
-@app.get("/placements", response_model=List[PlacementWithRelations])
-def list_placements(
-    db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
-    limit: int = 100,
-    offset: int = 0
-):
-    """Listar placeringar med detaljer om organisation och person."""
-    query = db.query(Placement).options(joinedload(Placement.organisation), joinedload(Placement.person))
     query = apply_meta_filters(query, Placement, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
     query = apply_sorting(query, Placement, sortkey)
-    return query.offset(offset).limit(limit).all()
+    query = apply_expand_for_placements(query, expand)
+    
+    placements = query.offset(offset).limit(limit).all()
 
-@app.get("/placements/{placement_id}", response_model=PlacementWithRelations)
-def get_placement(placement_id: str, db: Session = Depends(get_db)):
-    placement = db.query(Placement).options(joinedload(Placement.organisation), joinedload(Placement.person)).filter(Placement.id == placement_id).first()
+    return placements
+
+@app.get("/placements/{id}", response_model=PlacementExpanded, summary="Placering baserat på id")
+def get_placement_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expand: Optional[List[PlacementExpandEnum]] = Query(None, alias="expand"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera 'displayName' för alla refererade objekt.")
+):
+    """
+    Hämta en specifik placering baserat på dess ID.
+    """
+    query = db.query(Placement)
+    query = apply_expand_for_placements(query, expand)
+    
+    placement = query.filter(Placement.id == id).first()
+    
     if not placement:
-        raise HTTPException(status_code=404, detail="Placement not found")
+        raise HTTPException(status_code=404, detail="Placering hittades inte")
+        
     return placement
 
-@app.post("/placements/lookup", response_model=List[PlacementWithRelations])
-def lookup_placements(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med placeringar baserat på en lista med ID:n."""
-    placements = db.query(Placement).options(joinedload(Placement.organisation), joinedload(Placement.person)).filter(Placement.id.in_(lookup_data.ids)).all()
+@app.post("/placements/lookup", response_model=PlacementExpandedArray, summary="Hämta många placeringar baserat på en lista av ID:n eller av Id från personer.")
+def lookup_placements(
+    lookup_data: LookupRequest,
+    db: Session = Depends(get_db),
+    expand: Optional[List[PlacementExpandEnum]] = Query(None, alias="expand"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera 'displayName' för alla refererade objekt.")
+):
+    """
+    Istället för att hämta placeringar en i taget med en loop av GET-anrop så finns det även möjlighet att hämta många placeringar på en gång genom att skicka ett anrop med en lista med önskade placeringar.
+    """
+    query = db.query(Placement)
+    
+    # Handle the lookup logic based on placement IDs and person IDs
+    if not lookup_data.ids:
+        return []
+    
+    # Check if any ID matches a placement, a child, or an owner.
+    # We'll use or_ for this. We also need to do a join for the owners.
+    query = query.join(Placement.owners, isouter=True).filter(
+        or_(
+            Placement.id.in_(lookup_data.ids),
+            Placement.child_id.in_(lookup_data.ids),
+            Person.id.in_(lookup_data.ids)
+        )
+    ).distinct()
+
+    query = apply_expand_for_placements(query, expand)
+    
+    placements = query.all()
+    
     return placements
 
 
-@app.get("/duties", response_model=List[Duty])
+@app.get("/duties", response_model=DutiesArray, summary="Hämta en lista med tjänstgöringar.")
 def get_duties(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
+    organisation: Optional[str] = Query(None, alias="organisation", description="Begränsa urvalet till de tjänstgöringar som är kopplade till ett organisationselement."),
+    dutyRole: Optional[DutyRoleEnum] = Query(None, alias="dutyRole", description="Begränsta urvalet till de tjänstgöringar som matchar roll"),
+    person: Optional[str] = Query(None, alias="person", description="Begränsa urvalet till de tjänstgöringar som är kopplade till person ID"),
+    startDate_onOrBefore: Optional[date] = Query(None, alias="startDate.onOrBefore"),
+    startDate_onOrAfter: Optional[date] = Query(None, alias="startDate.onOrAfter"),
+    endDate_onOrBefore: Optional[date] = Query(None, alias="endDate.onOrBefore"),
+    endDate_onOrAfter: Optional[date] = Query(None, alias="endDate.onOrAfter"),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expand: Optional[List[DutyExpandEnum]] = Query(None, alias="expand", description="Beskriver om expanderade data ska hämtas"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames"),
+    sortkey: Optional[str] = Query(None, description="Anger hur resultatet ska sorteras."),
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
 ):
-    query = db.query(Duty)
-    query = apply_meta_filters(query, Duty, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
-    query = apply_sorting(query, Duty, sortkey)
-    return query.offset(offset).limit(limit).all()
+    """
+    Hämta en lista med tjänstgöringar baserat på filter och sorteringsparametrar.
+    """
+    if organisation:
+        # NOTE: A full implementation for a real-world scenario would need to recursively
+        # find all descendants of the given organisation, but for this mock API,
+        # we will simply filter on the organisation ID directly.
+        pass
 
-@app.post("/duties/lookup", response_model=List[Duty])
-def lookup_duties(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med uppdrag baserat på en lista med ID:n."""
-    duties = db.query(Duty).filter(Duty.id.in_(lookup_data.ids)).all()
+    query = db.query(Duty)
+
+    if organisation:
+        query = query.filter(Duty.organisation_id == organisation)
+    if dutyRole:
+        query = query.filter(Duty.duty_role == dutyRole)
+    if person:
+        query = query.filter(Duty.person_id == person)
+    if startDate_onOrBefore:
+        query = query.filter(Duty.start_date <= startDate_onOrBefore)
+    if startDate_onOrAfter:
+        query = query.filter(Duty.start_date >= startDate_onOrAfter)
+    if endDate_onOrBefore:
+        query = query.filter(or_(Duty.end_date.is_(None), Duty.end_date <= endDate_onOrBefore))
+    if endDate_onOrAfter:
+        query = query.filter(or_(Duty.end_date.is_(None), Duty.end_date >= endDate_onOrAfter))
+
+    query = apply_meta_filters(query, Duty, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
+    query = apply_expand_for_duties(query, expand)
+    query = apply_sorting(query, Duty, sortkey)
+
+    duties = query.offset(offset).limit(limit).all()
+    return duties
+
+@app.get("/duties/{id}", response_model=DutyExpanded, summary="Hämta tjänstgöring baserat på tjänstgörings ID")
+def get_duty_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expand: Optional[List[DutyExpandEnum]] = Query(None, alias="expand"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
+    """
+    Hämta en specifik tjänstgöring baserat på dess ID.
+    """
+    query = db.query(Duty)
+    query = apply_expand_for_duties(query, expand)
+    
+    duty = query.filter(Duty.id == id).first()
+    
+    if not duty:
+        raise HTTPException(status_code=404, detail="Tjänstgöring hittades inte")
+    
+    return duty
+
+@app.post("/duties/lookup", response_model=DutiesArray, summary="Hämta många tjänstgöringar baserat på en lista av ID:n.")
+def lookup_duties(
+    lookup_data: LookupRequest,
+    db: Session = Depends(get_db),
+    expand: Optional[List[DutyExpandEnum]] = Query(None, alias="expand"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
+    """
+    Istället för att hämta tjänstgöringar en i taget med en loop av GET-anrop så finns det även möjlighet att hämta många tjänstgöringar på en gång genom att skicka ett anrop med en lista med önskade tjänstgöringar.
+    """
+    if not lookup_data.ids:
+        return []
+
+    query = db.query(Duty).filter(Duty.id.in_(lookup_data.ids))
+    query = apply_expand_for_duties(query, expand)
+    duties = query.all()
     return duties
 
 @app.get("/groups", response_model=List[Group])

@@ -1,21 +1,22 @@
+# Uppdaterad docker-compose.yml
 version: '3.8'
 
 services:
   db:
-    # Use the official MySQL 8.0 image
+    # Använd den officiella MySQL 8.0-avbildningen
     image: mysql:8.0
-    # Set environment variables for the database
+    # Sätt miljövariabler för databasen
     environment:
       MYSQL_ROOT_PASSWORD: my_root_password
       MYSQL_DATABASE: ss12000_db
-    # Persist the database data in a named volume
+    # Spara databasdata i en namngiven volym
     volumes:
-      # This is the key part: it mounts our database setup script
-      # and MySQL will automatically run it on first startup.
+      # Denna del är viktig: den monterar vårt databas-inställningsskript
+      # och MySQL kommer automatiskt att köra det vid första uppstarten.
       - ./database.sql:/docker-entrypoint-initdb.d/database.sql
-      # Persist the data even if the container is removed
+      # Spara data även om containern tas bort
       - db_data:/var/lib/mysql
-    # Define a healthcheck to ensure the database is ready
+    # Definiera en hälsokontroll för att säkerställa att databasen är redo
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -23,21 +24,22 @@ services:
       retries: 5
 
   app:
-    # Build the image from the local Dockerfile
+    # Bygg avbildningen från den lokala Dockerfilen
     build: .
-    # Map port 8000 on the host to port 8000 in the container
+    # Mappa port 8000 på värden till port 8000 i containern
     ports:
       - "8000:8000"
-    # This ensures the app container doesn't start until the 'db' container
-    # is reported as healthy by its healthcheck.
+    # Detta säkerställer att app-containern inte startar förrän 'db'-containern
+    # rapporteras som frisk av sin hälsokontroll.
     depends_on:
       db:
         condition: service_healthy
-    # Pass the database connection string as an environment variable
+    # Skicka databasanslutningssträngen som en miljövariabel
     environment:
-      DATABASE_URL: "mysql+mysqlconnector://root:my_root_password@db:3306/ss12000_db"
+      DATABASE_URL: mysql+mysqlconnector://root:my_root_password@db:3306/ss12000_db
+    # Montera den lokala källkoden i containern för automatisk omladdning
+    volumes:
+      - .:/app
 
-
-# Define the named volume for persistent database storage
 volumes:
   db_data:
