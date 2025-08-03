@@ -60,6 +60,19 @@ class ProgrammeSortkeyEnum(str, Enum):
     CodeAsc = "CodeAsc"
     ModifiedDesc = "ModifiedDesc"
 
+class SyllabusSortkeyEnum(str, Enum):
+    ModifiedDesc = "ModifiedDesc"
+    SubjectNameAsc = "SubjectNameAsc"
+    SubjectNameDesc = "SubjectNameDesc"
+    SubjectCodeAsc = "SubjectCodeAsc"
+    SubjectCodeDesc = "SubjectCodeDesc"
+    CourseNameAsc = "CourseNameAsc"
+    CourseNameDesc = "CourseNameDesc"
+    CourseCodeAsc = "CourseCodeAsc"
+    CourseCodeDesc = "CourseCodeDesc"
+    SubjectDesignationAsc = "SubjectDesignationAsc"
+    SubjectDesignationDesc = "SubjectDesignationDesc"
+
 # --- Lookup Request Schema ---
 class LookupRequest(BaseModel):
     ids: List[str]
@@ -122,6 +135,13 @@ class Person(BaseModel):
 
     class Config:
         orm_mode = True
+
+class PersonSchema(PersonBase):
+    id: str
+    created: datetime
+    modified: datetime
+    class Config:
+        from_attributes = True
 
 class DutySchema(BaseModel):
     id: str
@@ -264,9 +284,60 @@ class Syllabus(BaseModel):
     id: str
     name: str
 
-class SchoolUnitOffering(BaseModel):
+class SyllabusBase(BaseModel):
     id: str
-    name: str
+    subject_name: Optional[str] = None
+    subject_code: Optional[str] = None
+    course_name: Optional[str] = None
+    course_code: Optional[str] = None
+    subject_designation: Optional[str] = None
+    level: Optional[str] = None
+    points: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    description: Optional[str] = None
+    last_published_version: Optional[str] = None
+    published_at: Optional[datetime] = None
+    status: Optional[str] = None
+    school_unit_offerings: Optional[List[str]] = None
+    programmes: Optional[List[str]] = None
+    created: datetime
+    modified: datetime
+    
+    class Config:
+        from_attributes = True
+
+class Syllabus(SyllabusBase):
+    created: datetime
+    modified: datetime
+
+class Syllabuses(BaseModel):
+    __root__: List[Syllabus]
+
+class SyllabusesArray(BaseModel):
+    __root__: List[Syllabus]
+
+class SchoolUnitOfferingSchema(BaseModel):
+    id: str
+    name: Optional[str] = None
+    code: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    offered_at_id: Optional[str] = None
+    created: datetime
+    modified: datetime
+
+    class Config:
+        from_attributes = True
+
+class SchoolUnitOfferingExpanded(SchoolUnitOfferingSchema):
+    offered_at: Optional[OrganisationBase] = None
+    
+    class Config:
+        from_attributes = True
+
+class SchoolUnitOfferingsArray(BaseModel):
+    __root__: List["SchoolUnitOfferingSchema"]
 
 class CalendarEventBase(BaseModel):
     id: str
@@ -375,6 +446,9 @@ class PersonReference(BaseModel):
     id: str
     displayName: Optional[str] = None
     securityMarking: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 class PlacementReference(BaseModel):
     id: str

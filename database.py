@@ -182,20 +182,38 @@ class StudyPlan(Base):
     student = relationship("Person", back_populates="studyplans")
 
 class Syllabus(Base):
-    """Mappar mot tabellen 'syllabuses'."""
     __tablename__ = "syllabuses"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    subject_name = Column(String(255))
+    subject_code = Column(String(50))
+    course_name = Column(String(255))
+    course_code = Column(String(50))
+    subject_designation = Column(String(255))
+    level = Column(String(50))
+    points = Column(Integer)
+    start_date = Column(Date)
+    end_date = Column(Date)
+    description = Column(Text)
+    last_published_version = Column(String(50))
+    published_at = Column(DateTime)
+    status = Column(String(50))
+    school_unit_offerings = Column(String(255)) # Lagras som en komma-separerad sträng
+    programmes = Column(String(255)) # Lagras som en komma-separerad sträng
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
 class SchoolUnitOffering(Base):
-    """Mappar mot tabellen 'schoolUnitOfferings'."""
-    __tablename__ = "schoolUnitOfferings"
+    __tablename__ = "school_unit_offerings"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    name = Column(String(255))
+    code = Column(String(50))
+    start_date = Column(Date)
+    end_date = Column(Date)
+    offered_at_id = Column(String(36), ForeignKey('organisations.id'))
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
+
+    offered_at = relationship("Organisation", back_populates="school_unit_offerings")
 
 class Activity(Base):
     """Mappar mot tabellen 'activities'."""
