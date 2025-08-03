@@ -48,6 +48,13 @@ class DutyRoleEnum(str, Enum):
 class DutyExpandEnum(str, Enum):
     person = "person"
 
+class GroupTypesEnum(str, Enum):
+    classGroup = "ClassGroup"
+    teachingGroup = "TeachingGroup"
+
+class GroupExpandEnum(str, Enum):
+    assignmentRoles = "assignmentRoles"
+
 # --- Lookup Request Schema ---
 class LookupRequest(BaseModel):
     ids: List[str]
@@ -225,12 +232,6 @@ class ResponsibleForSchema(BaseModel):
     
     class Config:
         orm_mode = True
-
-class GroupBase(BaseModel):
-    id: str
-    name: str
-    created: datetime
-    modified: datetime
 
 class Group(BaseModel):
     id: str
@@ -411,13 +412,6 @@ class PersonExpanded(Person):
     class Config:
         orm_mode = True
 
-class PlacementExpanded(PlacementBase):
-    child: Optional[PersonBase] = None
-    owner: Optional[PersonBase] = None
-    placed_at: Optional[OrganisationBase] = None
-    group: Optional[GroupBase] = None
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class PlacementExpandedArray(BaseModel):
@@ -430,3 +424,52 @@ class DutyExpanded(DutyBase):
 
 class DutiesArray(BaseModel):
     __root__: List["DutyExpanded"]
+
+class AssignmentRoleBase(BaseModel):
+    id: str
+    group_id: Optional[str] = None
+    person_id: Optional[str] = None
+    assignment_role: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    created: Optional[datetime] = None
+    modified: Optional[datetime] = None
+
+class AssignmentRoleSchema(AssignmentRoleBase):
+    model_config = ConfigDict(from_attributes=True)
+
+class AssignmentRoleExpanded(AssignmentRoleBase):
+    person: Optional[Person] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+    
+class GroupBase(BaseModel):
+    id: str
+    display_name: str
+    group_type: GroupTypesEnum
+    school_types: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    organisation_id: Optional[str] = None
+    created: Optional[datetime] = None
+    modified: Optional[datetime] = None
+
+class GroupSchema(GroupBase):
+    model_config = ConfigDict(from_attributes=True)
+
+class GroupsExpanded(BaseModel):
+    __root__: List[GroupSchema]
+
+class GroupExpanded(GroupBase):
+    assignment_roles: Optional[List[AssignmentRoleExpanded]] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+    
+class PlacementExpanded(PlacementBase):
+    child: Optional[PersonBase] = None
+    owner: Optional[PersonBase] = None
+    placed_at: Optional[OrganisationBase] = None
+    group: Optional[GroupBase] = None
+
+    model_config = ConfigDict(from_attributes=True)

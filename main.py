@@ -15,7 +15,9 @@ app = FastAPI(title="SS12000 Mock API med MySQL")
 
 # Hjälpfunktion för dynamisk sortering
 def apply_sorting(query, model, sortkey: Optional[str]):
-    """Applicerar sortering på en SQLAlchemy-fråga baserat på sortkey-parametern."""
+    """
+    Applicerar sortering på en SQLAlchemy-fråga baserat på sortkey-parametern.
+    """
     if not sortkey:
         return query
 
@@ -32,19 +34,31 @@ def apply_sorting(query, model, sortkey: Optional[str]):
         "FamilyNameDesc": (model.family_name, desc),
         "CivicNoAsc": (model.civic_no, asc),
         "CivicNoDesc": (model.civic_no, desc),
-        "StartdateAsc": (model.start_date, asc),
-        "StartdateDesc": (model.start_date, desc),
-        "EnddateAsc": (model.end_date, asc),
-        "EnddateDesc": (model.end_date, desc),
+        "StartDateDesc": (model.start_date, desc),
+        "StartDateAsc": (model.start_date, asc),
+        "EndDateAsc": (model.end_date, asc),
+        "EndDateDesc": (model.end_date, desc),
         "NameAsc": (model.name, asc),
         "NameDesc": (model.name, desc),
     }
-
+    
+    # Check if the sortkey exists in the mapping before attempting to use it.
     if sortkey not in sort_mapping:
-        raise HTTPException(status_code=400, detail=f"Invalid sortkey: {sortkey}")
+        raise HTTPException(status_code=400, detail=f"Ogiltig sortkey: {sortkey}")
 
-    sort_field, sort_order = sort_mapping[sortkey]
-    return query.order_by(sort_order(sort_field))
+    column, direction = sort_mapping.get(sortkey, (None, None))
+    
+    # We now have to handle the case when the sortkey is valid for some models but not for others.
+    # For example 'DisplayNameAsc' is only valid for Person and not for other Models.
+    try:
+        if column and direction:
+            query = query.order_by(direction(column))
+    except AttributeError:
+        # Handle case where the column does not exist on the model
+        raise HTTPException(status_code=400, detail=f"Ogiltig sortkey: {sortkey} för denna resurs.")
+
+
+    return query
 
 # Hjälpfunktion för att applicera meta-filter
 def apply_meta_filters(query, model, metaCreatedBefore: Optional[datetime], metaCreatedAfter: Optional[datetime], metaModifiedBefore: Optional[datetime], metaModifiedAfter: Optional[datetime]):
@@ -188,6 +202,18 @@ def apply_expand_for_duties(query, expands: Optional[List[DutyExpandEnum]]):
     if DutyExpandEnum.person in expands:
         query = query.options(joinedload(Duty.person))
     
+    return query
+
+def apply_expand_for_groups(query, expands: Optional[List[GroupExpandEnum]]):
+    """
+    Hjälpfunktion för att dynamiskt lägga till 'joinedload' för grupper.
+    """
+    if not expands:
+        return query
+    
+    if GroupExpandEnum.assignmentRoles in expands:
+        query = query.options(joinedload(Group.assignment_roles))
+        
     return query
 
 # --- API Endpoints ---
@@ -697,27 +723,106 @@ def lookup_duties(
     duties = query.all()
     return duties
 
-@app.get("/groups", response_model=List[Group])
+@app.get("/groups", response_model=GroupsExpanded, summary="Hämta en lista med grupper.")
 def get_groups(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
+    groupType: Optional[List[GroupTypesEnum]] = Query(None, alias="groupType", description="Begränsa urvalet till grupper av en eller flera type."),
+    schoolTypes: Optional[List[SchoolTypesEnum]] = Query(None, alias="schoolTypes", description="Begränsa urvalet av grupper till de som har en av de angivna skolformerna."),
+    organisation: Optional[List[str]] = Query(None, alias="organisation", description="Begränsa urvalet till de grupper som direkt kopplade till angivna organisationselement."),
+    startDate_onOrBefore: Optional[date] = Query(None, alias="startDate.onOrBefore"),
+    startDate_onOrAfter: Optional[date] = Query(None, alias="startDate.onOrAfter"),
+    endDate_onOrBefore: Optional[date] = Query(None, alias="endDate.onOrBefore"),
+    endDate_onOrAfter: Optional[date] = Query(None, alias="endDate.onOrAfter"),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expand: Optional[List[GroupExpandEnum]] = Query(None, alias="expand", description="Beskriver om expanderade data ska hämtas"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera 'displayName' för alla refererade objekt."),
+    sortkey: Optional[str] = Query(None, description="Anger hur resultatet ska sorteras."),
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    pageToken: Optional[str] = Query(None, alias="pageToken", description="Ett opakt värde som servern givit som svar på en tidigare ställd fråga. Kan inte kombineras med andra filter men väl med 'limit'."),
 ):
+    """
+    Hämta en lista med grupper baserat på filter och sorteringsparametrar.
+    """
+    if pageToken and any([groupType, schoolTypes, organisation, startDate_onOrBefore, startDate_onOrAfter, endDate_onOrBefore, endDate_onOrAfter, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter]):
+        raise HTTPException(status_code=400, detail="Filter kan inte kombineras med pageToken.")
+    
+    # We ignore pageToken for this mock API as it requires more complex pagination logic.
+    # We will raise a 400 error for any use of pageToken with other filters.
+    if pageToken:
+        # TODO: Implement pageToken logic if needed in the future
+        raise HTTPException(status_code=501, detail="PageToken-funktionalitet är inte implementerad.")
+        
     query = db.query(Group)
-    query = apply_meta_filters(query, Group, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
-    query = apply_sorting(query, Group, sortkey)
-    return query.offset(offset).limit(limit).all()
 
-@app.post("/groups/lookup", response_model=List[Group])
-def lookup_groups(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med grupper baserat på en lista med ID:n."""
-    groups = db.query(Group).filter(Group.id.in_(lookup_data.ids)).all()
-    return groups
+    if groupType:
+        query = query.filter(Group.group_type.in_(groupType))
+    if schoolTypes:
+        # We need to filter by comma-separated string, so we'll do an OR
+        or_clauses = [Group.school_types.like(f"%{st}%") for st in schoolTypes]
+        query = query.filter(or_(*or_clauses))
+    if organisation:
+        query = query.filter(Group.organisation_id.in_(organisation))
+    if startDate_onOrBefore:
+        query = query.filter(Group.start_date <= startDate_onOrBefore)
+    if startDate_onOrAfter:
+        query = query.filter(Group.start_date >= startDate_onOrAfter)
+    if endDate_onOrBefore:
+        query = query.filter(or_(Group.end_date.is_(None), Group.end_date <= endDate_onOrBefore))
+    if endDate_onOrAfter:
+        query = query.filter(or_(Group.end_date.is_(None), Group.end_date >= endDate_onOrAfter))
+
+    query = apply_meta_filters(query, Group, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
+    query = apply_expand_for_groups(query, expand)
+    query = apply_sorting(query, Group, sortkey)
+
+    groups = query.offset(offset).limit(limit).all()
+    
+    # TODO: Handle expandReferenceNames for groups
+    # This requires adding the logic to `expand_groups_data` function which is not yet created.
+
+    return {"__root__": groups}
+
+@app.post("/groups/lookup", response_model=GroupsExpanded, summary="Hämta många grupper baserat på en lista av ID:n.")
+def lookup_groups(
+    lookup_data: LookupRequest,
+    db: Session = Depends(get_db),
+    expand: Optional[List[GroupExpandEnum]] = Query(None, alias="expand"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
+    """
+    Istället för att hämta grupper en i taget med en loop av GET-anrop så finns det även möjlighet att hämta många grupper på en gång genom att skicka ett anrop med en lista med önskade grupper.
+    """
+    if not lookup_data.ids:
+        return []
+
+    query = db.query(Group).filter(Group.id.in_(lookup_data.ids))
+    query = apply_expand_for_groups(query, expand)
+    groups = query.all()
+    return {"__root__": groups}
+
+@app.get("/groups/{id}", response_model=GroupExpanded, summary="Hämta grupp baserat på grupp ID")
+def get_group_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expand: Optional[List[GroupExpandEnum]] = Query(None, alias="expand"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
+    """
+    Hämta en specifik grupp baserat på dess ID.
+    """
+    query = db.query(Group)
+    query = apply_expand_for_groups(query, expand)
+    
+    group = query.filter(Group.id == id).first()
+    
+    if not group:
+        raise HTTPException(status_code=404, detail="Grupp hittades inte")
+    
+    return group
 
 @app.get("/programmes", response_model=List[Programme])
 def get_programmes(

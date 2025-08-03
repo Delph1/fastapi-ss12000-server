@@ -66,8 +66,8 @@ class Placement(Base):
     group_id = Column(String(36), ForeignKey('groups.id'))
     person_id = Column(String(36), ForeignKey('persons.id'))  # Representerar 'child' i specen
     owner_id = Column(String(36), ForeignKey('persons.id'))
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start_date = Column(date)
+    end_date = Column(date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
     
@@ -75,6 +75,11 @@ class Placement(Base):
     group = relationship("Group")
     child = relationship("Person", foreign_keys=[person_id], primaryjoin="Placement.person_id == Person.id")
     owner = relationship("Person", foreign_keys=[owner_id], primaryjoin="Placement.owner_id == Person.id")
+
+class PlacementOwner(Base):
+    __tablename__ = "placement_owners"
+    placement_id = Column(String(36), ForeignKey('placements.id'), primary_key=True)
+    owner_id = Column(String(36), ForeignKey('persons.id'), primary_key=True)
 
 class Duty(Base):
     __tablename__ = "duties"
@@ -94,11 +99,34 @@ class Duty(Base):
 class Group(Base):
     __tablename__ = "groups"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=False)
+    group_type = Column(String(50), nullable=False)
+    school_types = Column(String(255)) # Lagras som en komma-separerad sträng
+    start_date = Column(date)
+    end_date = Column(date)
+    organisation_id = Column(String(36), ForeignKey('organisations.id'))
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
-    
+
+    # Relationships
+    organisation = relationship("Organisation", foreign_keys=[organisation_id])
+    assignment_roles = relationship("AssignmentRole", back_populates="group")
     group_memberships = relationship("GroupMembership", back_populates="group")
+
+class AssignmentRole(Base):
+    __tablename__ = "assignment_roles"
+    id = Column(String(36), primary_key=True)
+    group_id = Column(String(36), ForeignKey('groups.id'))
+    person_id = Column(String(36), ForeignKey('persons.id'))
+    assignment_role = Column(String(255), nullable=False)
+    start_date = Column(date)
+    end_date = Column(date)
+    created = Column(DateTime, default=datetime.utcnow)
+    modified = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    group = relationship("Group", back_populates="assignment_roles")
+    person = relationship("Person", foreign_keys=[person_id])
 
 class GroupMembership(Base):
     __tablename__ = "group_memberships"
@@ -285,8 +313,8 @@ class Enrolment(Base):
     id = Column(String(36), primary_key=True)
     person_id = Column(String(36), ForeignKey('persons.id'))
     enroled_at_id = Column(String(36), ForeignKey('organisations.id'))
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start_date = Column(date)
+    end_date = Column(date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
     
