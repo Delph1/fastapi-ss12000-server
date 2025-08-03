@@ -168,12 +168,18 @@ class Programme(Base):
     parent_programme = relationship("Programme", remote_side=[id])
 
 class StudyPlan(Base):
-    """Mappar mot tabellen 'studyPlans'."""
-    __tablename__ = "studyPlans"
+    """Mappar mot tabellen 'studyplans'."""
+    __tablename__ = "studyplans"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    student_id = Column(String(36), ForeignKey('persons.id'))
+    start_date = Column(Date)
+    end_date = Column(Date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
+
+    student = relationship("Person", back_populates="studyplans")
 
 class Syllabus(Base):
     """Mappar mot tabellen 'syllabuses'."""

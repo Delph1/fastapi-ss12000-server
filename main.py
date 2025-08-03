@@ -216,6 +216,25 @@ def apply_expand_for_groups(query, expands: Optional[List[GroupExpandEnum]]):
         
     return query
 
+def apply_studyplan_filters(query, student_ids: Optional[List[str]],
+                            startDate_onOrBefore: Optional[date], startDate_onOrAfter: Optional[date],
+                            endDate_onOrBefore: Optional[date], endDate_onOrAfter: Optional[date]):
+    if student_ids:
+        query = query.filter(StudyPlan.student_id.in_(student_ids))
+    
+    if startDate_onOrBefore:
+        # Poster med null i end_date tas alltid med
+        query = query.filter(or_(StudyPlan.start_date <= startDate_onOrBefore, StudyPlan.end_date.is_(None)))
+    if startDate_onOrAfter:
+        query = query.filter(or_(StudyPlan.start_date >= startDate_onOrAfter, StudyPlan.end_date.is_(None)))
+
+    if endDate_onOrBefore:
+        query = query.filter(or_(StudyPlan.end_date <= endDate_onOrBefore, StudyPlan.end_date.is_(None)))
+    if endDate_onOrAfter:
+        query = query.filter(or_(StudyPlan.end_date >= endDate_onOrAfter, StudyPlan.end_date.is_(None)))
+        
+    return query
+
 # --- API Endpoints ---
 # --- Organisations endpoints below ---
 @app.get("/organisations", response_model=List[OrganisationBase], summary="Hämta en lista med organisationer.")
@@ -898,26 +917,69 @@ def get_programme_by_id(
     
     return programme
 
-@app.get("/studyPlans", response_model=List[StudyPlan])
-def get_study_plans(
+@app.get("/studyplans", response_model=Union[StudyPlans, StudyPlansExpandedArray])
+def get_studyplans(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
+    student: Optional[List[str]] = Query(None, description="Begränsa urvalet till utpekade elever."),
+    startDate_onOrBefore: Optional[date] = Query(None, alias="startDate.onOrBefore"),
+    startDate_onOrAfter: Optional[date] = Query(None, alias="startDate.onOrAfter"),
+    endDate_onOrBefore: Optional[date] = Query(None, alias="endDate.onOrBefore"),
+    endDate_onOrAfter: Optional[date] = Query(None, alias="endDate.onOrAfter"),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera 'displayName' för alla refererade objekt."),
     sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
-    limit: int = 100,
-    offset: int = 0
+    limit: int = Query(100, ge=1, le=100),
+    offset: int = 0,
+    pageToken: Optional[str] = Query(None, description="Ett opakt värde för sidnumrering. Kan inte kombineras med andra filter.")
 ):
+    """Hämta en lista med studieplaner."""
+    if pageToken and any([student, startDate_onOrBefore, startDate_onOrAfter, endDate_onOrBefore, endDate_onOrAfter, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter, sortkey, offset]):
+        raise HTTPException(status_code=400, detail="Filter och sortkey kan inte kombineras med pageToken.")
+    
     query = db.query(StudyPlan)
+    
+    # Använd ny hjälpkfunktion för att applicera filter
+    query = apply_studyplan_filters(query, student, startDate_onOrBefore, startDate_onOrAfter, endDate_onOrBefore, endDate_onOrAfter)
+    
+    # Använd befintliga hjälpkfunktioner för metadata och sortering
     query = apply_meta_filters(query, StudyPlan, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
     query = apply_sorting(query, StudyPlan, sortkey)
-    return query.offset(offset).limit(limit).all()
+    
+    studyplans = query.offset(offset).limit(limit).all()
+    
+    # Hantera 'expandReferenceNames'
+    if expandReferenceNames:
+        expanded_studyplans = []
+        for sp in studyplans:
+            student_obj = db.query(Person).filter(Person.id == sp.student_id).first()
+            expanded_sp = StudyPlanExpanded.from_orm(sp)
+            expanded_sp.student = PersonSchema.from_orm(student_obj) if student_obj else None
+            expanded_studyplans.append(expanded_sp)
+        return expanded_studyplans
+    
+    return studyplans
 
-@app.post("/studyPlans/lookup", response_model=List[StudyPlan])
-def lookup_study_plans(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med studieplaner baserat på en lista med ID:n."""
-    study_plans = db.query(StudyPlan).filter(StudyPlan.id.in_(lookup_data.ids)).all()
+@app.get("/studyplans/{id}", response_model=Union[StudyPlanSchema, StudyPlanExpanded])
+def get_studyplan_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera 'displayName' för alla refererade objekt.")
+):
+    """Hämta studieplan baserat på ID."""
+    studyplan = db.query(StudyPlan).filter(StudyPlan.id == id).first()
+    if not studyplan:
+        raise HTTPException(status_code=404, detail="Posten hittades inte.")
+
+    if expandReferenceNames:
+        student_obj = db.query(Person).filter(Person.id == studyplan.student_id).first()
+        expanded_sp = StudyPlanExpanded.from_orm(studyplan)
+        expanded_sp.student = PersonSchema.from_orm(student_obj) if student_obj else None
+        return expanded_sp
+    
+    return studyplan
     return study_plans
 
 @app.get("/syllabuses", response_model=List[Syllabus])

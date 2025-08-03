@@ -488,3 +488,37 @@ class PlacementExpanded(PlacementBase):
     group: Optional[GroupBase] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class StudyPlanBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    student_id: Optional[str] = None
+
+class StudyPlanSchema(StudyPlanBase):
+    id: str
+    created: datetime
+    modified: datetime
+
+    class Config:
+        from_attributes = True
+
+class StudyPlanReference(BaseModel):
+    id: str
+    title: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class StudyPlans(BaseModel):
+    __root__: List[StudyPlanSchema]
+
+class StudyPlanExpanded(StudyPlanSchema):
+    student: Optional[PersonSchema] = None
+    
+    class Config:
+        from_attributes = True
+
+class StudyPlansExpandedArray(BaseModel):
+    __root__: List["StudyPlanExpanded"]
