@@ -155,12 +155,17 @@ class ResponsibleFor(Base):
     child = relationship("Person", foreign_keys=[child_id])
 
 class Programme(Base):
-    """Mappar mot tabellen 'programmes'."""
     __tablename__ = "programmes"
     id = Column(String(36), primary_key=True)
     name = Column(String(255), nullable=False)
+    code = Column(String(255), nullable=False)
+    parent_programme_id = Column(String(36), ForeignKey('programmes.id'))
+    school_types = Column(String(255)) # Lagras som en komma-separerad sträng
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    parent_programme = relationship("Programme", remote_side=[id])
 
 class StudyPlan(Base):
     """Mappar mot tabellen 'studyPlans'."""

@@ -55,6 +55,11 @@ class GroupTypesEnum(str, Enum):
 class GroupExpandEnum(str, Enum):
     assignmentRoles = "assignmentRoles"
 
+class ProgrammeSortkeyEnum(str, Enum):
+    NameAsc = "NameAsc"
+    CodeAsc = "CodeAsc"
+    ModifiedDesc = "ModifiedDesc"
+
 # --- Lookup Request Schema ---
 class LookupRequest(BaseModel):
     ids: List[str]
@@ -240,6 +245,16 @@ class Group(BaseModel):
 class Programme(BaseModel):
     id: str
     name: str
+    code: str
+    parent_programme_id: Optional[str] = None
+    school_types: Optional[str] = None
+    created: Optional[datetime] = None
+    modified: Optional[datetime] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class ProgrammesArray(BaseModel):
+    __root__: List[Programme]
 
 class StudyPlan(BaseModel):
     id: str
@@ -442,7 +457,7 @@ class AssignmentRoleExpanded(AssignmentRoleBase):
     person: Optional[Person] = None
     
     model_config = ConfigDict(from_attributes=True)
-    
+
 class GroupBase(BaseModel):
     id: str
     display_name: str

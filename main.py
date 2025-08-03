@@ -824,27 +824,79 @@ def get_group_by_id(
     
     return group
 
-@app.get("/programmes", response_model=List[Programme])
+@app.get("/programmes", response_model=ProgrammesArray, summary="Hämta en lista av program.")
 def get_programmes(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
+    schoolTypes: Optional[List[SchoolTypesEnum]] = Query(None, alias="schoolType", description="Begränsa urvalet till de program som matchar skolformen."),
+    code: Optional[str] = Query(None, description="Begränsta urvalet till de program som matchar programkod"),
+    parentProgramme: Optional[str] = Query(None, description="Begränsta urvalet till de program som matchar angivet parentProgramme."),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames"),
+    sortkey: Optional[ProgrammeSortkeyEnum] = Query(None, description="Anger hur resultatet ska sorteras."),
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    pageToken: Optional[str] = Query(None, alias="pageToken", description="Ett opakt värde som servern givit som svar på en tidigare ställd fråga. Kan inte kombineras med andra filter men väl med 'limit'."),
 ):
+    """
+    Hämta en lista med program baserat på filter och sorteringsparametrar.
+    """
+    if pageToken and any([schoolTypes, code, parentProgramme, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter]):
+        raise HTTPException(status_code=400, detail="Filter kan inte kombineras med pageToken.")
+        
+    if pageToken:
+        # TODO: Implement pageToken logic if needed in the future
+        raise HTTPException(status_code=501, detail="PageToken-funktionalitet är inte implementerad.")
+        
     query = db.query(Programme)
+    
+    if schoolTypes:
+        or_clauses = [Programme.school_types.like(f"%{st}%") for st in schoolTypes]
+        query = query.filter(or_(*or_clauses))
+    if code:
+        query = query.filter(Programme.code == code)
+    if parentProgramme:
+        query = query.filter(Programme.parent_programme_id == parentProgramme)
+        
     query = apply_meta_filters(query, Programme, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
     query = apply_sorting(query, Programme, sortkey)
-    return query.offset(offset).limit(limit).all()
+    
+    programmes = query.offset(offset).limit(limit).all()
+    
+    return programmes
 
-@app.post("/programmes/lookup", response_model=List[Programme])
-def lookup_programmes(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med program baserat på en lista med ID:n."""
+@app.post("/programmes/lookup", response_model=ProgrammesArray, summary="Hämta många program baserat på en lista av ID:n.")
+def lookup_programmes(
+    lookup_data: IdLookup,
+    db: Session = Depends(get_db),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
+    """
+    Istället för att hämta program en i taget med en loop av GET-anrop så finns det även möjlighet att hämta många program på en gång genom att skicka ett anrop med en lista med önskade program.
+    """
+    if not lookup_data.ids:
+        return []
+    
     programmes = db.query(Programme).filter(Programme.id.in_(lookup_data.ids)).all()
     return programmes
+
+@app.get("/programmes/{id}", response_model=Programme, summary="Hämta program baserat på ID")
+def get_programme_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
+    """
+    Hämta ett specifikt program baserat på dess ID.
+    """
+    programme = db.query(Programme).filter(Programme.id == id).first()
+    
+    if not programme:
+        raise HTTPException(status_code=404, detail="Programmet hittades inte.")
+    
+    return programme
 
 @app.get("/studyPlans", response_model=List[StudyPlan])
 def get_study_plans(
