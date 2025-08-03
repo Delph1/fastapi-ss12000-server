@@ -852,75 +852,215 @@ def get_school_unit_offering_by_id(
     
     return SchoolUnitOfferingSchema.from_orm(offering)
 
-@app.get("/activities", response_model=List[ActivityWithRelations])
+@app.get("/activities", response_model=List[Union[ActivityExpanded, ActivitySchema]])
 def get_activities(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
+    member: Optional[str] = Query(None),
+    teacher: Optional[str] = Query(None),
+    organisation: Optional[str] = Query(None),
+    group: Optional[str] = Query(None),
+    startDate_onOrBefore: Optional[date] = Query(None, alias="startDate.onOrBefore"),
+    startDate_onOrAfter: Optional[date] = Query(None, alias="startDate.onOrAfter"),
+    endDate_onOrBefore: Optional[date] = Query(None, alias="endDate.onOrBefore"),
+    endDate_onOrAfter: Optional[date] = Query(None, alias="endDate.onOrAfter"),
+    metaCreatedBefore: Optional[datetime] = Query(None, alias="meta.created.before"),
+    metaCreatedAfter: Optional[datetime] = Query(None, alias="meta.created.after"),
+    metaModifiedBefore: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    metaModifiedAfter: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expand: Optional[List[ActivityExpandEnum]] = Query(None),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames"),
+    sortkey: Optional[str] = Query(None, enum=["ModifiedDesc", "DisplayNameAsc"]),
     limit: int = 100,
-    offset: int = 0
+    pageToken: Optional[str] = Query(None),
 ):
-    """Hämtar en lista över aktiviteter med tillhörande kalenderhändelser och närvaroposter."""
-    query = db.query(Activity).options(
-        joinedload(Activity.calendar_events),
-        joinedload(Activity.attendance_records)
+    """Hämta en lista med aktiviteter baserat på ett antal sökparametrar."""
+    
+    if pageToken and (member or teacher or organisation or group or startDate_onOrBefore or startDate_onOrAfter or endDate_onOrBefore or endDate_onOrAfter or metaCreatedBefore or metaCreatedAfter or metaModifiedBefore or metaModifiedAfter or expand or expandReferenceNames or sortkey):
+        raise HTTPException(status_code=400, detail="pageToken kan inte kombineras med andra filter.")
+    
+    query = db.query(Activity)
+
+    query = apply_activity_filters(
+        query,
+        member,
+        teacher,
+        organisation,
+        group,
+        startDate_onOrBefore,
+        startDate_onOrAfter,
+        endDate_onOrBefore,
+        endDate_onOrAfter
     )
+
     query = apply_meta_filters(query, Activity, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
     query = apply_sorting(query, Activity, sortkey)
-    return query.offset(offset).limit(limit).all()
+    
+    activities = query.limit(limit).all()
 
-@app.get("/activities/{activity_id}", response_model=ActivityWithRelations)
-def get_activity(activity_id: str, db: Session = Depends(get_db)):
-    """Hämtar en specifik aktivitet med tillhörande kalenderhändelser och närvaroposter."""
-    activity = db.query(Activity).options(
-        joinedload(Activity.calendar_events),
-        joinedload(Activity.attendance_records)
-    ).filter(Activity.id == activity_id).first()
-    if not activity:
-        raise HTTPException(status_code=404, detail="Activity not found")
-    return activity
+    if expand or expandReferenceNames:
+        return [expand_activity(a, expand, expandReferenceNames, db) for a in activities]
 
-@app.post("/activities/lookup", response_model=List[ActivityWithRelations])
-def lookup_activities(lookup_data: LookupRequest, db: Session = Depends(get_db)):
+    return [ActivitySchema.from_orm(a) for a in activities]
+
+@app.post("/activities/lookup", response_model=List[Union[ActivityExpanded, ActivitySchema]])
+def lookup_activities(
+    lookup_data: LookupRequest,
+    db: Session = Depends(get_db),
+    expand: Optional[List[ActivityExpandEnum]] = Query(None),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames")
+):
     """Hämta en lista med aktiviteter baserat på en lista med ID:n."""
-    activities = db.query(Activity).options(
-        joinedload(Activity.calendar_events),
-        joinedload(Activity.attendance_records)
-    ).filter(Activity.id.in_(lookup_data.ids)).all()
-    return activities
+    activities = db.query(Activity).filter(Activity.id.in_(lookup_data.ids)).all()
 
-@app.get("/calendarEvents", response_model=List[CalendarEventWithActivity])
+    if expand or expandReferenceNames:
+        return [expand_activity(a, expand, expandReferenceNames, db) for a in activities]
+
+    return [ActivitySchema.from_orm(a) for a in activities]
+
+@app.get("/activities/{id}", response_model=ActivityExpanded)
+def get_activity_by_id(
+    id: str,
+    db: Session = Depends(get_db),
+    expand: Optional[List[ActivityExpandEnum]] = Query(None, description="Beskriver om expanderade data ska hämtas"),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera displayName för alla refererade objekt."),
+):
+    """Hämta en aktivitet baserat på dess ID."""
+    activity = db.query(Activity).filter(Activity.id == id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Posten hittades inte.")
+    
+    return expand_activity(activity, expand, expandReferenceNames, db)
+
+@app.get("/calendarEvents", response_model=List[CalendarEvent])
 def get_calendar_events(
     db: Session = Depends(get_db),
-    metaCreatedBefore: Optional[datetime] = Query(None, alias="metaCreatedBefore"),
-    metaCreatedAfter: Optional[datetime] = Query(None, alias="metaCreatedAfter"),
-    metaModifiedBefore: Optional[datetime] = Query(None, alias="metaModifiedBefore"),
-    metaModifiedAfter: Optional[datetime] = Query(None, alias="metaModifiedAfter"),
-    sortkey: Optional[str] = Query(None, description='Sort order, e.g. "ModifiedDesc", "CreatedAsc".'),
-    limit: int = 100,
-    offset: int = 0
+    # Nödvändiga parametrar
+    startTime_onOrAfter: datetime = Query(..., alias="startTime.onOrAfter", description="Hämta kalenderhändelser från och med denna tidpunkt (RFC 3339 format)."),
+    startTime_onOrBefore: datetime = Query(..., alias="startTime.onOrBefore", description="Hämta kalenderhändelser till och med denna tidpunkt (RFC 3339 format)."),
+    
+    # Valfria parametrar
+    endTime_onOrBefore: Optional[datetime] = Query(None, alias="endTime.onOrBefore"),
+    endTime_onOrAfter: Optional[datetime] = Query(None, alias="endTime.onOrAfter"),
+    activity: Optional[uuid.UUID] = Query(None, description="Begränsa urvalet till utpekad aktivitet."),
+    student: Optional[uuid.UUID] = Query(None, description="Begränsa urvalet baserat på student-ID."),
+    teacher: Optional[uuid.UUID] = Query(None, description="Begränsa urvalet baserat på lärare-ID."),
+    organisation: Optional[uuid.UUID] = Query(None, description="Begränsa urvalet till utpekat organisationselement."),
+    group: Optional[uuid.UUID] = Query(None, description="Begränsa urvalet till utpekad grupp."),
+    meta_created_before: Optional[datetime] = Query(None, alias="meta.created.before"),
+    meta_created_after: Optional[datetime] = Query(None, alias="meta.created.after"),
+    meta_modified_before: Optional[datetime] = Query(None, alias="meta.modified.before"),
+    meta_modified_after: Optional[datetime] = Query(None, alias="meta.modified.after"),
+    expand: Optional[List[CalendarEventExpandEnum]] = Query(None),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt."),
+    sortkey: Optional[CalendarEventSortkeyEnum] = Query(None, description="Anger hur resultatet ska sorteras."),
+    limit: Optional[int] = Query(None, ge=1),
+    pageToken: Optional[str] = Query(None),
 ):
-    """Hämtar en lista över kalenderhändelser med tillhörande aktivitet."""
-    query = db.query(CalendarEvent).options(joinedload(CalendarEvent.activity))
-    query = apply_meta_filters(query, CalendarEvent, metaCreatedBefore, metaCreatedAfter, metaModifiedBefore, metaModifiedAfter)
-    query = apply_sorting(query, CalendarEvent, sortkey)
-    return query.offset(offset).limit(limit).all()
+    """Returnerar kalenderhändelser utifrån en aktivitet eller student."""
 
-@app.get("/calendarEvents/{calendar_event_id}", response_model=CalendarEventWithActivity)
-def get_calendar_event(calendar_event_id: str, db: Session = Depends(get_db)):
-    """Hämtar en specifik kalenderhändelse med tillhörande aktivitet."""
-    calendar_event = db.query(CalendarEvent).options(joinedload(CalendarEvent.activity)).filter(CalendarEvent.id == calendar_event_id).first()
+    # Validera att pageToken inte kombineras med andra filter
+    if pageToken and any([
+        startTime_onOrAfter, startTime_onOrBefore, endTime_onOrAfter, endTime_onOrBefore, 
+        activity, student, teacher, organisation, group, 
+        meta_created_before, meta_created_after, meta_modified_before, meta_modified_after
+    ]):
+        raise HTTPException(
+            status_code=400,
+            detail="Filter kan inte kombineras med pageToken."
+        )
+
+    # Bygg upp frågan med hjälparfunktioner
+    query = db.query(CalendarEvent)
+    query = apply_time_filters(query, CalendarEvent, startTime_onOrAfter, startTime_onOrBefore, endTime_onOrAfter, endTime_onOrBefore)
+    query = apply_relational_filters(query, activity, student, teacher, organisation, group)
+    query = apply_meta_filters(query, CalendarEvent, meta_created_before, meta_created_after, meta_modified_before, meta_modified_after)
+    query = apply_sorting(query, CalendarEvent, sortkey)
+    query = apply_pagination(query, limit, pageToken)
+
+    if expand:
+        if CalendarEventExpandEnum.activity in expand:
+            query = query.options(joinedload(CalendarEvent.activity))
+        if CalendarEventExpandEnum.attendance in expand:
+            query = query.options(joinedload(CalendarEvent.attendance).joinedload(Attendance.person))
+
+    return query.all()
+
+@app.get("/calendarEvents/{id}", response_model=CalendarEventExpanded)
+def get_calendar_event_by_id(
+    id: uuid.UUID,
+    db: Session = Depends(get_db),
+    expand: Optional[List[CalendarEventExpandEnum]] = Query(None),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt."),
+):
+    """Returnerar en kalenderhändelse utifrån ID."""
+    
+    query = db.query(CalendarEvent)
+
+    if expand:
+        if CalendarEventExpandEnum.activity in expand:
+            query = query.options(joinedload(CalendarEvent.activity))
+        if CalendarEventExpandEnum.attendance in expand:
+            query = query.options(joinedload(CalendarEvent.attendance).joinedload(Attendance.person))
+    
+    calendar_event = query.filter(CalendarEvent.id == str(id)).first()
+    
     if not calendar_event:
-        raise HTTPException(status_code=404, detail="Calendar Event not found")
+        raise HTTPException(status_code=404, detail="Posten hittades inte.")
+
+    # Mock-logik för expandReferenceNames
+    if expandReferenceNames:
+        if calendar_event.activity:
+            calendar_event.activity.name = f"{calendar_event.activity.name} (Ref)"
+        
+        if calendar_event.attendance:
+            for attendance_record in calendar_event.attendance:
+                if attendance_record.person:
+                    attendance_record.person.display_name = f"{attendance_record.person.display_name} (Ref)"
+
     return calendar_event
 
-@app.post("/calendarEvents/lookup", response_model=List[CalendarEventWithActivity])
-def lookup_calendar_events(lookup_data: LookupRequest, db: Session = Depends(get_db)):
-    """Hämta en lista med kalenderhändelser baserat på en lista med ID:n."""
-    calendar_events = db.query(CalendarEvent).options(joinedload(CalendarEvent.activity)).filter(CalendarEvent.id.in_(lookup_data.ids)).all()
+@app.post("/calendarEvents/lookup", response_model=List[CalendarEventExpanded])
+def lookup_calendar_events(
+    lookup_data: CalendarEventsLookupRequest,
+    db: Session = Depends(get_db),
+    expandReferenceNames: Optional[bool] = Query(None, alias="expandReferenceNames", description="Returnera `displayName` för alla refererade objekt."),
+):
+    """Hämta kalenderhändelser baserat på en lista av ID:n."""
+    query = db.query(CalendarEvent).options(joinedload(CalendarEvent.activity), joinedload(CalendarEvent.attendance).joinedload(Attendance.person))
+    
+    # Skapa en lista med or-villkor för att söka på alla ID:n i alla listor
+    filters = []
+    if lookup_data.calendarEventIds:
+        filters.append(CalendarEvent.id.in_(lookup_data.calendarEventIds))
+    if lookup_data.activityIds:
+        filters.append(CalendarEvent.activity_id.in_(lookup_data.activityIds))
+    if lookup_data.personIds:
+        # Detta är en mock-implementation, i en riktig databas skulle detta kräva en subquery eller joinedload
+        # av attendance-tabellen för att hitta kalenderhändelser baserat på personens ID.
+        # Exempel: query = query.join(Attendance).filter(Attendance.person_id.in_(lookup_data.personIds))
+        pass
+
+    if not filters:
+        raise HTTPException(
+            status_code=400,
+            detail="Minst en av 'calendarEventIds', 'activityIds' eller 'personIds' måste skickas in."
+        )
+
+    calendar_events = query.filter(or_(*filters)).all()
+
+    if not calendar_events:
+        raise HTTPException(status_code=404, detail="Posterna hittades inte.")
+
+    # Mock-logik för expandReferenceNames
+    if expandReferenceNames:
+        for event in calendar_events:
+            if event.activity:
+                event.activity.name = f"{event.activity.name} (Ref)"
+            if event.attendance:
+                for attendance_record in event.attendance:
+                    if attendance_record.person:
+                        attendance_record.person.display_name = f"{attendance_record.person.display_name} (Ref)"
+
     return calendar_events
 
 @app.get("/attendance", response_model=List[AttendanceWithRelations])

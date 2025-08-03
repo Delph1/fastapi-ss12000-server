@@ -33,6 +33,8 @@ def apply_sorting(query, model, sortkey: Optional[str]):
         "EndDateDesc": (model.end_date, desc),
         "NameAsc": (model.name, asc),
         "NameDesc": (model.name, desc),
+        "StartTimeAsc": (CalendarEvent.start_time, asc),
+        "StartTimeDesc": (CalendarEvent.start_time, desc),
     }
     
     # Check if the sortkey exists in the mapping before attempting to use it.
@@ -64,6 +66,57 @@ def apply_meta_filters(query, model, metaCreatedBefore: Optional[datetime], meta
         query = query.filter(model.modified < metaModifiedBefore)
     if metaModifiedAfter:
         query = query.filter(model.modified > metaModifiedAfter)
+    return query
+
+def apply_time_filters(query, model, startTime_onOrAfter, startTime_onOrBefore, endTime_onOrAfter, endTime_onOrBefore):
+    """Applicerar tidsbaserade filter på en SQLAlchemy-fråga."""
+    query = query.filter(
+        model.start_time >= startTime_onOrAfter,
+        model.start_time <= startTime_onOrBefore
+    )
+    if endTime_onOrAfter:
+        query = query.filter(model.end_time >= endTime_onOrAfter)
+    if endTime_onOrBefore:
+        query = query.filter(model.end_time <= endTime_onOrBefore)
+    return query
+
+def apply_relational_filters(query, activity, student, teacher, organisation, group):
+    """Applicerar relationsbaserade filter (mock-implementation) på en SQLAlchemy-fråga."""
+    if activity:
+        query = query.filter(CalendarEvent.activity_id == str(activity))
+    
+    if student:
+        # I en fullständig app skulle detta kräva komplexa join-operationer
+        # Här är en mock-implementation
+        query = query.filter(or_(
+            CalendarEvent.id == "some_mock_event_for_student_" + str(student),
+        ))
+    
+    if teacher:
+        # I en fullständig app skulle detta kräva komplexa join-operationer
+        # Här är en mock-implementation
+        query = query.filter(or_(
+            CalendarEvent.id == "some_mock_event_for_teacher_" + str(teacher),
+        ))
+
+    if organisation:
+        # Mock-implementation
+        query = query.filter(CalendarEvent.id.like("%organisation_" + str(organisation) + "%"))
+
+    if group:
+        # Mock-implementation
+        query = query.filter(CalendarEvent.id.like("%group_" + str(group) + "%"))
+
+    return query
+
+def apply_pagination(query, limit, pageToken):
+    """Hanterar paginering med limit och pageToken (mock-implementation)."""
+    if pageToken:
+        # Mock-logik för pageToken
+        offset_from_token = int(pageToken) * (limit or 100)
+        query = query.offset(offset_from_token)
+    elif limit:
+        query = query.limit(limit)
     return query
 
 def expand_organisations(organisations: List[Organisation], db: Session) -> List[OrganisationExpanded]:
@@ -261,3 +314,58 @@ def expand_school_unit_offering(offering: SchoolUnitOffering, expandReferenceNam
                 offering_dict['offered_at'] = OrganisationBase.from_orm(organisation)
         return SchoolUnitOfferingExpanded(**offering_dict)
     return SchoolUnitOfferingSchema.from_orm(offering)
+
+def apply_activity_filters(query, member, teacher, organisation, group, startDate_onOrBefore, startDate_onOrAfter, endDate_onOrBefore, endDate_onOrAfter):
+    """Applicerar filter på en SQLAlchemy-fråga för aktiviteter."""
+    if member:
+        query = query.join(activity_group_association).join(Group).join(GroupMembership).filter(GroupMembership.person_id == member)
+    
+    if teacher:
+        query = query.join(activity_teacher_association).filter(activity_teacher_association.c.teacher_duty_id == teacher)
+
+    if organisation:
+        query = query.filter(Activity.organisation_id == organisation)
+
+    if group:
+        query = query.join(activity_group_association).filter(activity_group_association.c.group_id == group)
+    
+    if startDate_onOrBefore:
+        query = query.filter(Activity.start_date <= startDate_onOrBefore)
+    if startDate_onOrAfter:
+        query = query.filter(Activity.start_date >= startDate_onOrAfter)
+    
+    if endDate_onOrBefore:
+        query = query.filter(or_(Activity.end_date <= endDate_onOrBefore, Activity.end_date.is_(None)))
+    if endDate_onOrAfter:
+        query = query.filter(or_(Activity.end_date >= endDate_onOrAfter, Activity.end_date.is_(None)))
+
+    return query
+
+def expand_activity(activity: Activity, expand: Optional[List[ActivityExpandEnum]], expandReferenceNames: bool, db: Session):
+    activity_data = ActivitySchema.from_orm(activity).dict()
+
+    if expand:
+        # Ladda och expandera refererade grupper
+        if ActivityExpandEnum.groups in expand:
+            activity_data["groups"] = [GroupSchema.from_orm(g) for g in activity.groups]
+        
+        # Ladda och expandera refererade lärare
+        if ActivityExpandEnum.teachers in expand:
+            activity_data["teachers"] = [DutySchema.from_orm(d) for d in activity.teachers]
+        
+        # Ladda och expandera refererad kursplan
+        if ActivityExpandEnum.syllabus in expand:
+            if activity.syllabus_id:
+                syllabus = db.query(Syllabus).get(activity.syllabus_id)
+                if syllabus:
+                    activity_data["syllabus"] = Syllabus.from_orm(syllabus)
+
+    if expandReferenceNames:
+        # Ladda display names för refererade objekt
+        if activity.organisation_id:
+            org = db.query(Organisation).get(activity.organisation_id)
+            if org:
+                # Assuming OrganisationSchema is already created, which it is
+                activity_data["organisation"] = Organisation.from_orm(org)
+    
+    return ActivityExpanded(**activity_data)

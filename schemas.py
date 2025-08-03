@@ -73,9 +73,37 @@ class SyllabusSortkeyEnum(str, Enum):
     SubjectDesignationAsc = "SubjectDesignationAsc"
     SubjectDesignationDesc = "SubjectDesignationDesc"
 
+class ActivityExpandEnum(str, Enum):
+    groups = "groups"
+    teachers = "teachers"
+    syllabus = "syllabus"
+
+class CalendarEventExpandEnum(str, Enum):
+    activity = "activity"
+    attendance = "attendance"
+
+class CalendarEventSortkeyEnum(str, Enum):
+    ModifiedDesc = "ModifiedDesc"
+    ModifiedAsc = "ModifiedAsc"
+    CreatedDesc = "CreatedDesc"
+    CreatedAsc = "CreatedAsc"
+    StartTimeAsc = "StartTimeAsc"
+    StartTimeDesc = "StartTimeDesc"
+
 # --- Lookup Request Schema ---
 class LookupRequest(BaseModel):
     ids: List[str]
+
+class CalendarEventsLookupRequest(BaseModel):
+    """En modell för att slå upp kalenderhändelser med en lista av ID:n."""
+    calendarEventIds: Optional[List[str]] = []
+    activityIds: Optional[List[str]] = []
+    personIds: Optional[List[str]] = []
+    
+    # Validera att minst en lista inte är tom
+    def model_post_init(self):
+        if not self.calendarEventIds and not self.activityIds and not self.personIds:
+            raise ValueError("Minst en av 'calendarEventIds', 'activityIds' eller 'personIds' måste innehålla ID:n.")
 
 # --- Base Schemas ---
 
@@ -175,6 +203,17 @@ class DutyBase(BaseModel):
     modified: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class GroupBase(BaseModel):
+    id: str
+    display_name: str
+    group_type: GroupTypesEnum
+    school_types: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    organisation_id: Optional[str] = None
+    created: Optional[datetime] = None
+    modified: Optional[datetime] = None
 
 class PlacementBase(BaseModel):
     id: str
@@ -339,10 +378,31 @@ class SchoolUnitOfferingExpanded(SchoolUnitOfferingSchema):
 class SchoolUnitOfferingsArray(BaseModel):
     __root__: List["SchoolUnitOfferingSchema"]
 
+class CalendarEvent(BaseModel):
+    id: str
+    name: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    activity_id: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 class CalendarEventBase(BaseModel):
     id: str
-    name: str
-    activity_id: str
+    startTime: datetime
+    endTime: datetime
+    location: Optional[str] = None
+    activity_id: Optional[str] = None
+    created: datetime
+    modified: datetime
+
+class CalendarEvent(CalendarEventBase):
+    class Config:
+        from_attributes = True
+
+class CalendarEvents(BaseModel):
+    __root__: List[CalendarEvent]
 
 class AttendanceEventBase(BaseModel):
     id: str
@@ -416,11 +476,33 @@ class PlacementWithRelations(PlacementBase):
     organisation: OrganisationBase
     person: PersonBase
 
+class ActivitySchema(BaseModel):
+    id: str
+    display_name: str
+    organisation_id: str
+    syllabus_id: str
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    created: Optional[datetime] = None
+    modified: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class ActivityExpanded(ActivitySchema):
+    groups: Optional[List[GroupBase]] = None
+    teachers: Optional[List[DutySchema]] = None
+    syllabus: Optional[Syllabus] = None
+    organisation: Optional[OrganisationBase] = None
+    
 class ActivityWithRelations(BaseModel):
     id: str
     name: str
     calendar_events: List[CalendarEventBase] = []
     attendance_records: List[AttendanceBase] = []
+
+class ActivitiesArray(BaseModel):
+    __root__: List[Union[ActivityExpanded, ActivitySchema]]
 
 class CalendarEventWithActivity(CalendarEventBase):
     activity: ActivityWithRelations
@@ -501,8 +583,6 @@ class PersonExpanded(Person):
     class Config:
         orm_mode = True
 
-
-
 class PlacementExpandedArray(BaseModel):
     __root__: List["PlacementExpanded"]
 
@@ -513,6 +593,21 @@ class DutyExpanded(DutyBase):
 
 class DutiesArray(BaseModel):
     __root__: List["DutyExpanded"]
+
+class CalendarEventExpanded(BaseModel):
+    id: str
+    name: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    
+    activity: Optional[ActivitySchema] = None
+    attendance: Optional[List[AttendanceBase]] = None
+
+    class Config:
+        from_attributes = True
+
+class CalendarEventsArray(BaseModel):
+    __root__: List[CalendarEventExpanded]
 
 class AssignmentRoleBase(BaseModel):
     id: str
@@ -532,17 +627,6 @@ class AssignmentRoleExpanded(AssignmentRoleBase):
     
     model_config = ConfigDict(from_attributes=True)
 
-class GroupBase(BaseModel):
-    id: str
-    display_name: str
-    group_type: GroupTypesEnum
-    school_types: Optional[str] = None
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
-    organisation_id: Optional[str] = None
-    created: Optional[datetime] = None
-    modified: Optional[datetime] = None
-
 class GroupSchema(GroupBase):
     model_config = ConfigDict(from_attributes=True)
 
@@ -554,7 +638,6 @@ class GroupExpanded(GroupBase):
     
     model_config = ConfigDict(from_attributes=True)
 
-    
 class PlacementExpanded(PlacementBase):
     child: Optional[PersonBase] = None
     owner: Optional[PersonBase] = None
@@ -596,3 +679,15 @@ class StudyPlanExpanded(StudyPlanSchema):
 
 class StudyPlansExpandedArray(BaseModel):
     __root__: List["StudyPlanExpanded"]
+
+class CalendarEventExpanded(BaseModel):
+    id: str
+    name: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    
+    activity: Optional[ActivitySchema] = None
+    attendance: Optional[List[AttendanceBase]] = None
+
+    class Config:
+        from_attributes = True

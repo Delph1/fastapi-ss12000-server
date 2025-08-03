@@ -2,7 +2,7 @@
 import os
 from datetime import date, datetime
 
-from sqlalchemy import create_engine, Column, String, DateTime, ForeignKey, Float, Text
+from sqlalchemy import create_engine, Column, String, DateTime, ForeignKey, Float, Text, Integer, Table
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 
 # --- Databas configuration ---
@@ -13,6 +13,21 @@ if not DATABASE_URL:
 engine = create_engine(DATABASE_URL)
 
 Base = declarative_base()
+
+# --- SQLAlchemy association tables for many-to-many relationships ---
+activity_group_association = Table(
+    'activity_group',
+    Base.metadata,
+    Column('activity_id', String(36), ForeignKey('activities.id'), primary_key=True),
+    Column('group_id', String(36), ForeignKey('groups.id'), primary_key=True)
+)
+
+activity_teacher_association = Table(
+    'activity_teacher',
+    Base.metadata,
+    Column('activity_id', String(36), ForeignKey('activities.id'), primary_key=True),
+    Column('teacher_duty_id', String(36), ForeignKey('duties.id'), primary_key=True)
+)
 
 # --- SQLAlchemy models ---
 
@@ -112,6 +127,7 @@ class Group(Base):
     organisation = relationship("Organisation", foreign_keys=[organisation_id])
     assignment_roles = relationship("AssignmentRole", back_populates="group")
     group_memberships = relationship("GroupMembership", back_populates="group")
+    activities = relationship("Activity", secondary=activity_group_association, back_populates="groups")
 
 class AssignmentRole(Base):
     __tablename__ = "assignment_roles"
@@ -164,7 +180,6 @@ class Programme(Base):
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
-    # Relationships
     parent_programme = relationship("Programme", remote_side=[id])
 
 class StudyPlan(Base):
@@ -174,8 +189,8 @@ class StudyPlan(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text)
     student_id = Column(String(36), ForeignKey('persons.id'))
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start_date = Column(date)
+    end_date = Column(date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
@@ -191,8 +206,8 @@ class Syllabus(Base):
     subject_designation = Column(String(255))
     level = Column(String(50))
     points = Column(Integer)
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start_date = Column(date)
+    end_date = Column(date)
     description = Column(Text)
     last_published_version = Column(String(50))
     published_at = Column(DateTime)
@@ -207,8 +222,8 @@ class SchoolUnitOffering(Base):
     id = Column(String(36), primary_key=True)
     name = Column(String(255))
     code = Column(String(50))
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start_date = Column(date)
+    end_date = Column(date)
     offered_at_id = Column(String(36), ForeignKey('organisations.id'))
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
@@ -219,23 +234,35 @@ class Activity(Base):
     """Mappar mot tabellen 'activities'."""
     __tablename__ = "activities"
     id = Column(String(36), primary_key=True)
-    name = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=False)
+    organisation_id = Column(String(36), ForeignKey('organisations.id'))
+    syllabus_id = Column(String(36), ForeignKey('syllabuses.id'))
+    start_date = Column(date)
+    end_date = Column(date)
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
+    groups = relationship("Group", secondary=activity_group_association, back_populates="activities")
+    teachers = relationship("Duty", secondary=activity_teacher_association)
+    syllabus = relationship("Syllabus")
+    organisation = relationship("Organisation")
     calendar_events = relationship("CalendarEvent", back_populates="activity")
-    attendance_records = relationship("Attendance", back_populates="activity")
+
 
 class CalendarEvent(Base):
     """Mappar mot tabellen 'calendarEvents'."""
     __tablename__ = "calendarEvents"
     id = Column(String(36), primary_key=True)
     name = Column(String(255), nullable=False)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    location = Column(String(255))
     activity_id = Column(String(36), ForeignKey("activities.id"))
     created = Column(DateTime, default=datetime.utcnow)
     modified = Column(DateTime, default=datetime.utcnow)
 
     activity = relationship("Activity", back_populates="calendar_events")
+    attendance = relationship("Attendance", back_populates="calendar_event")
 
 class Attendance(Base):
     """Mappar mot tabellen 'attendance'."""
@@ -250,6 +277,7 @@ class Attendance(Base):
     person = relationship("Person", back_populates="attendance")
     activity = relationship("Activity", back_populates="attendance_records")
     attendance_event = relationship("AttendanceEvent", back_populates="attendance_records")
+    calendar_event = relationship("CalendarEvent", back_populates="attendance")
 
 class AttendanceEvent(Base):
     """Mappar mot tabellen 'attendanceEvents'."""
